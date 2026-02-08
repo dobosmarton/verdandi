@@ -31,9 +31,9 @@ class DeployStep(AbstractStep):
             cloudflare=CloudflareDeployment(
                 project_name=slug,
                 deployment_url=f"https://{slug}.pages.dev",
-                custom_domain=f"{slug}.xyz",
+                custom_domain=f"{slug}.com",
                 ssl_active=True,
                 deployment_id="mock-deploy-001",
             ),
-            live_url=f"https://{slug}.xyz",
+            live_url=f"https://{slug}.com",
         )

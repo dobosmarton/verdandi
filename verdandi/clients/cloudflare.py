@@ -119,7 +119,7 @@ class CloudflareClient:
         to point to the Cloudflare nameservers returned.
 
         Args:
-            domain: Domain name to add (e.g., "myproject.xyz").
+            domain: Domain name to add (e.g., "myproject.com").
 
         Returns:
             Dict with keys: id, name, nameservers, status.

@@ -58,9 +58,9 @@ class MVPDefinitionStep(AbstractStep):
             cta_text="Get Early Access",
             cta_subtext="Free during beta. No credit card required.",
             domain_suggestions=[
-                f"{ctx.experiment.idea_title.split('—')[0].strip().lower().replace(' ', '')}.xyz",
+                f"{ctx.experiment.idea_title.split('—')[0].strip().lower().replace(' ', '')}.com",
                 f"get{ctx.experiment.idea_title.split('—')[0].strip().lower().replace(' ', '')}.com",
-                f"try{ctx.experiment.idea_title.split('—')[0].strip().lower().replace(' ', '')}.com",
+                f"try{ctx.experiment.idea_title.split('—')[0].strip().lower().replace(' ', '')}.dev",
             ],
             color_scheme="blue",
         )

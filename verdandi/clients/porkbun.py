@@ -1,8 +1,9 @@
 """Client stub for Porkbun domain registrar API.
 
 Porkbun offers programmatic domain registration with competitive pricing:
-.com at $7.97/yr, .xyz at ~$2/yr. Includes free WHOIS privacy, email
-forwarding, and SSL. API docs: https://porkbun.com/api/json/v3/documentation
+.com at ~$10/yr, .dev at ~$12/yr, .app at ~$14/yr. Includes free WHOIS
+privacy, email forwarding, and SSL.
+API docs: https://porkbun.com/api/json/v3/documentation
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ class PorkbunClient:
         """Check if a domain is available for registration.
 
         Args:
-            domain: Full domain name (e.g., "myproject.xyz").
+            domain: Full domain name (e.g., "myproject.com").
 
         Returns:
             Dict with keys: domain, available (bool), price, currency.
@@ -66,7 +67,7 @@ class PorkbunClient:
         """Purchase and register a domain.
 
         Args:
-            domain: Full domain name to register (e.g., "myproject.xyz").
+            domain: Full domain name to register (e.g., "myproject.com").
 
         Returns:
             Dict with keys: domain, registered (bool), expiry_date,
@@ -133,7 +134,7 @@ class PorkbunClient:
 
     def _mock_check_availability(self, domain: str) -> dict:
         tld = domain.rsplit(".", 1)[-1] if "." in domain else "com"
-        prices = {"com": "7.97", "xyz": "2.00", "site": "1.00", "io": "29.88"}
+        prices = {"com": "9.73", "dev": "11.98", "app": "13.98", "io": "29.88"}
         return {
             "domain": domain,
             "available": True,
@@ -143,7 +144,7 @@ class PorkbunClient:
 
     def _mock_register_domain(self, domain: str) -> dict:
         tld = domain.rsplit(".", 1)[-1] if "." in domain else "com"
-        prices = {"com": "7.97", "xyz": "2.00", "site": "1.00", "io": "29.88"}
+        prices = {"com": "9.73", "dev": "11.98", "app": "13.98", "io": "29.88"}
         return {
             "domain": domain,
             "registered": True,

@@ -48,7 +48,7 @@ class DistributionStep(AbstractStep):
             ],
             seo=SEOSubmission(
                 google_search_console_submitted=True,
-                sitemap_url="https://example.xyz/sitemap.xml",
+                sitemap_url="https://example.com/sitemap.xml",
             ),
             total_reach_estimate=2500,
         )

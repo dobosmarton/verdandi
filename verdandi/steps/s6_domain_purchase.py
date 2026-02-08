@@ -29,10 +29,10 @@ class DomainPurchaseStep(AbstractStep):
             step_name="domain_purchase",
             worker_id=ctx.worker_id,
             domain=DomainInfo(
-                domain=f"{slug}.xyz",
+                domain=f"{slug}.com",
                 registrar="porkbun",
                 purchased=bool(not ctx.dry_run),
-                cost_usd=2.0,
+                cost_usd=9.73,
                 nameservers=["ns1.porkbun.com", "ns2.porkbun.com"],
             ),
         )

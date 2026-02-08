@@ -22,7 +22,9 @@ Step 9:  Distribution         → Post to LinkedIn, X, Reddit, Bluesky
 Step 10: Monitor              → Poll analytics, calculate conversion, decide GO/ITERATE/NO_GO
 ```
 
-Each step produces a validated Pydantic model consumed by the next. Results are checkpointed to SQLite after every step, so the pipeline can resume from where it left off if interrupted.
+Each step produces a validated Pydantic model consumed by the next — `IdeaCandidate` feeds into `MarketResearch`, which feeds into `PreBuildScore` (the first gate — NO_GO halts the pipeline). Approved experiments continue through `MVPDefinition` and `LandingPageContent` into `DeploymentResult` (shared across Steps 6-8), then `DistributionResult`, and finally `ValidationReport` (the second gate — GO/ITERATE/NO_GO). Steps read prior outputs via `db.get_step_result()`.
+
+Results are checkpointed to SQLite after every step, so the pipeline can resume from where it left off if interrupted.
 
 ## Architecture
 
@@ -61,7 +63,7 @@ Key design decisions:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/verdandi.git
+git clone <your-repository-url>
 cd verdandi
 
 # Install in development mode
@@ -261,7 +263,7 @@ Each step produces a frozen Pydantic model stored as JSON in SQLite:
 | 2 - Scoring | `PreBuildScore` | total_score (0-100), decision (GO/NO_GO/ITERATE), components, risks, opportunities |
 | 3 - MVP Definition | `MVPDefinition` | product_name, tagline, features, pricing_model, cta_text, domain_suggestions |
 | 4 - Landing Page | `LandingPageContent` | headline, subheadline, features, testimonials, FAQ, rendered_html |
-| 5 - Human Review | `HumanReviewResult` | approved, reviewer, notes |
+| 5 - Human Review | `HumanReviewResult` | approved, skipped, reason |
 | 6 - Domain Purchase | `DeploymentResult` | domain (name, registrar, cost), live_url |
 | 7 - Deploy | `DeploymentResult` | cloudflare (deployment_url, ssl_active) |
 | 8 - Analytics Setup | `DeploymentResult` | analytics (website_id, tracking_script_url) |
@@ -289,6 +291,17 @@ verdandi enqueue run 3
 1. **Fast pass**: Normalized keyword fingerprints with Jaccard similarity (threshold > 0.6)
 2. **Semantic pass**: Embedding similarity (stubbed; requires sentence-transformers)
 
+## Error Handling & Resilience
+
+Verdandi is designed for unattended autonomous operation — every external call is wrapped in defensive patterns:
+
+- **Exponential backoff with jitter** — Retries follow `base_delay * 2^attempt + random_jitter`, preventing thundering herd on shared APIs. Configurable per step via `MAX_RETRIES` (default 3).
+- **Circuit breakers** — Each external service has an independent breaker that trips after consecutive failures, auto-resets after a cooldown period, and enters a half-open probe state before fully closing. Prevents wasting time and tokens on a downed service.
+- **Graceful degradation** — Research steps (Step 1) collect from whichever APIs respond and only fail if *all* sources are unavailable. A partial research result is better than no result.
+- **Correlation ID tracing** — Every pipeline run and API request gets a unique correlation ID propagated through structlog context vars and FastAPI middleware, making it straightforward to trace a single experiment across log lines.
+- **Structured logging** — All output goes through structlog with JSON or console rendering (configured via `LOG_FORMAT`). Every log entry includes experiment ID, step name, worker ID, and correlation ID.
+- **Pipeline checkpointing** — Step results are persisted to SQLite immediately after completion. If the process crashes mid-pipeline, `verdandi run <ID>` resumes from the last completed step.
+
 ## Project Structure
 
 ```
@@ -298,14 +311,16 @@ verdandi/
 ├── CLAUDE.md                   # Strategy document and implementation plan
 ├── verdandi/
 │   ├── __init__.py             # Package version
+│   ├── py.typed                # PEP 561 typed package marker
 │   ├── cli.py                  # Click CLI (all commands)
 │   ├── config.py               # pydantic-settings configuration
-│   ├── db.py                   # Database facade (SQLAlchemy sessions)
+│   ├── db.py                   # Database facade (SQLAlchemy sessions + CRUD helpers)
 │   ├── engine.py               # SQLAlchemy engine factory + session maker
 │   ├── orm.py                  # ORM table models (ExperimentRow, StepResultRow, etc.)
 │   ├── orchestrator.py         # PipelineRunner, step execution, checkpoint/resume
 │   ├── llm.py                  # PydanticAI agent wrapper
 │   ├── logging.py              # structlog configuration
+│   ├── protocols.py            # Protocol interfaces (StepProtocol, etc.)
 │   ├── retry.py                # Exponential backoff + circuit breaker
 │   ├── coordination.py         # Topic reservations, deduplication, worker identity
 │   ├── notifications.py        # Console/email notification stubs
@@ -333,7 +348,8 @@ verdandi/
 │   │   ├── app.py              # Application factory + lifespan
 │   │   ├── middleware.py       # Correlation ID middleware, exception handlers
 │   │   ├── deps.py             # Dependency injection (DbDep, SettingsDep)
-│   │   └── routes/             # 6 route modules
+│   │   ├── schemas.py          # Pydantic request/response schemas
+│   │   └── routes/             # 6 route modules (experiments, steps, reviews, actions, system, reservations)
 │   └── templates/
 │       └── landing_v1.html     # Tailwind CDN template with {{TOKEN}} placeholders
 └── tests/
@@ -343,9 +359,12 @@ verdandi/
     ├── test_orchestrator.py    # Pipeline execution tests
     ├── test_coordination.py    # Topic reservation + dedup tests
     ├── test_retry.py           # Retry + circuit breaker tests
-    ├── test_steps.py           # Step dry-run tests
-    ├── test_cli.py             # CLI command tests
     └── test_api/               # API endpoint tests
+        ├── conftest.py         # FastAPI test client fixtures
+        ├── test_experiments.py
+        ├── test_system.py
+        ├── test_reviews.py
+        └── test_actions.py
 ```
 
 ## Development
@@ -409,14 +428,14 @@ The orchestrator will automatically pick it up via the `@register_step` decorato
 |-----------|-------------|
 | Claude Sonnet 4.5 (LLM reasoning) | $10-30 |
 | Research APIs (Tavily + Serper + Exa + Perplexity) | $5-15 |
-| Domains (Porkbun, .xyz at ~$2 each) | $2-11/domain |
+| Domains (Porkbun, .com at ~$10 each) | $8-13/domain |
 | Hosting (Cloudflare Pages, free tier) | $0 |
 | Analytics (Umami self-hosted) | $0-5 |
 | Email collection (EmailOctopus, free tier) | $0 |
 | VPS (Hetzner CX22) | $5-10 |
-| **Total** | **$22-71/month** |
+| **Total** | **$28-83/month** |
 
-At roughly **$0.50-$1.55 per product validation**, Verdandi can test 30-100+ ideas monthly.
+At roughly **$0.75-$2.00 per product validation** (excluding domains), Verdandi can test 30-100+ ideas monthly.
 
 ## Experiment Lifecycle
 
@@ -431,7 +450,3 @@ PENDING ──────► RUNNING ──────► AWAITING_REVIEW ─�
 
 Any state ──────► ARCHIVED
 ```
-
-## License
-
-Private. All rights reserved.

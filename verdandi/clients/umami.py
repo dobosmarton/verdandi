@@ -36,7 +36,7 @@ class UmamiClient:
 
         Args:
             name: Display name for the website.
-            domain: Domain of the website (e.g., "myproject.xyz").
+            domain: Domain of the website (e.g., "myproject.com").
 
         Returns:
             Dict with keys: id, name, domain, tracking_code.
