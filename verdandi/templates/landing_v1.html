@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{PAGE_TITLE}}</title>
+    <meta name="description" content="{{META_DESCRIPTION}}">
+    <meta property="og:title" content="{{OG_TITLE}}">
+    <meta property="og:description" content="{{OG_DESCRIPTION}}">
+    <meta property="og:type" content="website">
+    <script src="https://cdn.tailwindcss.com"></script>
+    {{ANALYTICS_SCRIPT}}
+</head>
+<body class="bg-white text-gray-900 antialiased">
+
+    <!-- Hero -->
+    <section class="relative overflow-hidden bg-gradient-to-br from-indigo-50 via-white to-purple-50">
+        <div class="max-w-4xl mx-auto px-6 py-24 text-center">
+            <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight mb-6 text-gray-900">
+                {{HEADLINE}}
+            </h1>
+            <p class="text-xl text-gray-600 max-w-2xl mx-auto mb-10">
+                {{SUBHEADLINE}}
+            </p>
+            <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+                <a href="#signup" class="inline-flex items-center px-8 py-4 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200">
+                    {{CTA_TEXT}}
+                </a>
+            </div>
+            <p class="mt-4 text-sm text-gray-500">{{CTA_SUBTEXT}}</p>
+        </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="border-y border-gray-100 bg-gray-50">
+        <div class="max-w-4xl mx-auto px-6 py-12">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+                {{STATS_HTML}}
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="py-20">
+        <div class="max-w-5xl mx-auto px-6">
+            <h2 class="text-3xl font-bold text-center mb-4">{{FEATURES_TITLE}}</h2>
+            <p class="text-gray-600 text-center mb-12 max-w-2xl mx-auto">Everything you need to get started, nothing you don't.</p>
+            <div class="grid md:grid-cols-3 gap-8">
+                {{FEATURES_HTML}}
+            </div>
+        </div>
+    </section>
+
+    <!-- Testimonials -->
+    <section class="py-20 bg-gray-50">
+        <div class="max-w-5xl mx-auto px-6">
+            <h2 class="text-3xl font-bold text-center mb-12">What early users are saying</h2>
+            <div class="grid md:grid-cols-2 gap-8">
+                {{TESTIMONIALS_HTML}}
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="py-20">
+        <div class="max-w-3xl mx-auto px-6">
+            <h2 class="text-3xl font-bold text-center mb-12">Frequently Asked Questions</h2>
+            {{FAQ_HTML}}
+        </div>
+    </section>
+
+    <!-- Footer CTA -->
+    <section id="signup" class="py-20 bg-indigo-600">
+        <div class="max-w-3xl mx-auto px-6 text-center">
+            <h2 class="text-3xl font-bold text-white mb-4">{{FOOTER_CTA_HEADLINE}}</h2>
+            <p class="text-indigo-100 mb-8">Join the waitlist and be the first to know when we launch.</p>
+            <form class="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-md mx-auto" action="#" method="POST">
+                <input type="email" name="email" placeholder="you@example.com" required
+                    class="w-full px-4 py-3 rounded-lg text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300">
+                <button type="submit"
+                    class="w-full sm:w-auto px-6 py-3 bg-white text-indigo-600 font-semibold rounded-lg hover:bg-indigo-50 transition-colors whitespace-nowrap">
+                    {{FOOTER_CTA_TEXT}}
+                </button>
+            </form>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-8 border-t border-gray-100">
+        <div class="max-w-4xl mx-auto px-6 text-center text-sm text-gray-400">
+            <p>&copy; 2026 All rights reserved.</p>
+        </div>
+    </footer>
+
+</body>
+</html>
