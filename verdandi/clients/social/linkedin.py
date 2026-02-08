@@ -7,10 +7,18 @@ for product validation announcements.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class LinkedInPostResult(TypedDict):
+    id: str
+    text: str
+    created_at: str
+    url: str
 
 
 class LinkedInClient:
@@ -24,7 +32,7 @@ class LinkedInClient:
     def is_available(self) -> bool:
         return bool(self.access_token)
 
-    async def post(self, text: str) -> dict:
+    async def post(self, text: str) -> LinkedInPostResult:
         """Create a LinkedIn post (share).
 
         Args:
@@ -85,7 +93,7 @@ class LinkedInClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_post(self, text: str) -> dict:
+    def _mock_post(self, text: str) -> LinkedInPostResult:
         mock_id = "urn:li:share:7000000000000000001"
         return {
             "id": mock_id,

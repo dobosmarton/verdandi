@@ -37,7 +37,7 @@ class StepResultResponse(BaseModel):
     experiment_id: int
     step_name: str
     step_number: int
-    data: dict
+    data: object
     worker_id: str
     created_at: str
 

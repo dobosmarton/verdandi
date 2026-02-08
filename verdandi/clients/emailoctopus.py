@@ -8,10 +8,35 @@ landing pages to validate product interest.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class EmailList(TypedDict):
+    id: str
+    name: str
+    created_at: str
+    double_opt_in: bool
+
+
+class EmailContact(TypedDict):
+    id: str
+    email_address: str
+    status: str
+    list_id: str
+
+
+class EmailListStats(TypedDict):
+    id: str
+    name: str
+    total_contacts: int
+    subscribed: int
+    unsubscribed: int
+    pending: int
+    bounced: int
 
 
 class EmailOctopusClient:
@@ -25,7 +50,7 @@ class EmailOctopusClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def create_list(self, name: str) -> dict:
+    async def create_list(self, name: str) -> EmailList:
         """Create a new mailing list for an experiment.
 
         Args:
@@ -58,7 +83,7 @@ class EmailOctopusClient:
         logger.info("EmailOctopus create list: %s", name)
         return self._mock_create_list(name)
 
-    async def add_contact(self, list_id: str, email: str) -> dict:
+    async def add_contact(self, list_id: str, email: str) -> EmailContact:
         """Add a contact (email signup) to a mailing list.
 
         Args:
@@ -93,7 +118,7 @@ class EmailOctopusClient:
         logger.info("EmailOctopus add contact to list %s: %s", list_id, email)
         return self._mock_add_contact(list_id, email)
 
-    async def get_list_stats(self, list_id: str) -> dict:
+    async def get_list_stats(self, list_id: str) -> EmailListStats:
         """Get statistics for a mailing list.
 
         Used to track email signup counts for go/no-go decisions.
@@ -134,7 +159,7 @@ class EmailOctopusClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_create_list(self, name: str) -> dict:
+    def _mock_create_list(self, name: str) -> EmailList:
         return {
             "id": f"mock-list-{name.replace(' ', '-').lower()}",
             "name": name,
@@ -142,7 +167,7 @@ class EmailOctopusClient:
             "double_opt_in": False,
         }
 
-    def _mock_add_contact(self, list_id: str, email: str) -> dict:
+    def _mock_add_contact(self, list_id: str, email: str) -> EmailContact:
         return {
             "id": f"mock-contact-{email.split('@')[0]}",
             "email_address": email,
@@ -150,7 +175,7 @@ class EmailOctopusClient:
             "list_id": list_id,
         }
 
-    def _mock_get_list_stats(self, list_id: str) -> dict:
+    def _mock_get_list_stats(self, list_id: str) -> EmailListStats:
         return {
             "id": list_id,
             "name": "Mock Waitlist",

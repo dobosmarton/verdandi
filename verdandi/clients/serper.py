@@ -7,9 +7,26 @@ Key capability: site:reddit.com queries for extracting discussions.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import structlog
 
 logger = structlog.get_logger()
+
+
+class SerperResult(TypedDict):
+    title: str
+    link: str
+    snippet: str
+    position: int
+
+
+class SerperRedditResult(TypedDict):
+    title: str
+    link: str
+    snippet: str
+    subreddit: str
+    position: int
 
 
 class SerperClient:
@@ -23,7 +40,7 @@ class SerperClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def search(self, query: str, num: int = 10) -> list[dict]:
+    async def search(self, query: str, num: int = 10) -> list[SerperResult]:
         """Search Google via Serper and return structured SERP data.
 
         Args:
@@ -50,7 +67,7 @@ class SerperClient:
         logger.info("Serper search: %r (num=%d)", query, num)
         return self._mock_search(query, num)
 
-    async def search_reddit(self, query: str) -> list[dict]:
+    async def search_reddit(self, query: str) -> list[SerperRedditResult]:
         """Search Reddit discussions via Google site: queries.
 
         Uses site:reddit.com to find relevant Reddit threads discussing
@@ -92,8 +109,8 @@ class SerperClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_search(self, query: str, num: int) -> list[dict]:
-        results: list[dict] = [
+    def _mock_search(self, query: str, num: int) -> list[SerperResult]:
+        results: list[SerperResult] = [
             {
                 "title": f"Mock SERP result {i + 1} for '{query}'",
                 "link": f"https://example.com/serp-{i + 1}",
@@ -104,19 +121,9 @@ class SerperClient:
             }
             for i in range(min(num, 5))
         ]
-        # Include People Also Ask mock data
-        results.append(
-            {
-                "people_also_ask": [
-                    {"question": f"What is the best {query}?"},
-                    {"question": f"How much does {query} cost?"},
-                    {"question": f"Is {query} worth it?"},
-                ],
-            }
-        )
         return results
 
-    def _mock_search_reddit(self, query: str) -> list[dict]:
+    def _mock_search_reddit(self, query: str) -> list[SerperRedditResult]:
         return [
             {
                 "title": f"[Discussion] Anyone else frustrated with {query}?",

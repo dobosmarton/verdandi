@@ -8,10 +8,19 @@ in relevant communities.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class RedditSubmission(TypedDict):
+    id: str
+    subreddit: str
+    title: str
+    url: str
+    created_at: str
 
 
 class RedditClient:
@@ -43,7 +52,7 @@ class RedditClient:
         #     self._access_token = resp.json()["access_token"]
         self._access_token = "mock-token"
 
-    async def submit(self, subreddit: str, title: str, text: str) -> dict:
+    async def submit(self, subreddit: str, title: str, text: str) -> RedditSubmission:
         """Submit a self-post to a subreddit.
 
         Important: Reddit enforces a 10% self-promotion rule. Ensure
@@ -94,7 +103,7 @@ class RedditClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_submit(self, subreddit: str, title: str, text: str) -> dict:
+    def _mock_submit(self, subreddit: str, title: str, text: str) -> RedditSubmission:
         mock_id = "t3_abc123"
         return {
             "id": mock_id,

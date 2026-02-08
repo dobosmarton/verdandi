@@ -7,10 +7,18 @@ Used for distributing landing page announcements.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class TweetResult(TypedDict):
+    id: str
+    text: str
+    created_at: str
+    url: str
 
 
 class TwitterClient:
@@ -24,7 +32,7 @@ class TwitterClient:
     def is_available(self) -> bool:
         return bool(self.bearer_token)
 
-    async def post(self, text: str) -> dict:
+    async def post(self, text: str) -> TweetResult:
         """Post a tweet.
 
         Args:
@@ -62,7 +70,7 @@ class TwitterClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_post(self, text: str) -> dict:
+    def _mock_post(self, text: str) -> TweetResult:
         mock_id = "1234567890123456789"
         return {
             "id": mock_id,

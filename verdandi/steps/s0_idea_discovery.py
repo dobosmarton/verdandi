@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from verdandi.models.idea import IdeaCandidate, PainPoint
 from verdandi.steps.base import AbstractStep, StepContext, register_step
@@ -11,7 +11,27 @@ from verdandi.steps.base import AbstractStep, StepContext, register_step
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-_MOCK_IDEAS = [
+
+class _PainPointDict(TypedDict):
+    description: str
+    severity: int
+    frequency: str
+    source: str
+    quote: str
+
+
+class _MockIdea(TypedDict):
+    title: str
+    one_liner: str
+    problem_statement: str
+    target_audience: str
+    category: str
+    pain_points: list[_PainPointDict]
+    existing_solutions: list[str]
+    differentiation: str
+
+
+_MOCK_IDEAS: list[_MockIdea] = [
     {
         "title": "DevLog — Automated Developer Changelog",
         "one_liner": "Automatically generate beautiful changelogs from git commits and PRs",

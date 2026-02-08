@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 from pydantic import BaseModel
 
 from verdandi.config import Settings
+
+if TYPE_CHECKING:
+    from pydantic_ai.models.anthropic import AnthropicModel
 
 logger = structlog.get_logger()
 
@@ -17,18 +20,20 @@ T = TypeVar("T", bound=BaseModel)
 class LLMClient:
     """Wrapper around Anthropic Claude API with PydanticAI for structured outputs."""
 
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
-        self._model = None
+        self._model: AnthropicModel | None = None
 
     @property
-    def model(self):
+    def model(self) -> AnthropicModel:
         if self._model is None:
             from pydantic_ai.models.anthropic import AnthropicModel
+            from pydantic_ai.providers.anthropic import AnthropicProvider
 
+            provider = AnthropicProvider(api_key=self.settings.anthropic_api_key)
             self._model = AnthropicModel(
                 self.settings.llm_model,
-                api_key=self.settings.anthropic_api_key,
+                provider=provider,
             )
         return self._model
 
@@ -45,7 +50,7 @@ class LLMClient:
 
         agent = Agent(
             self.model,
-            result_type=response_model,
+            output_type=response_model,
             system_prompt=system or "You are a helpful assistant.",
         )
 
@@ -56,7 +61,7 @@ class LLMClient:
         )
 
         result = agent.run_sync(prompt)
-        return result.data
+        return result.output
 
     def generate_text(
         self,
@@ -70,12 +75,12 @@ class LLMClient:
 
         agent = Agent(
             self.model,
-            result_type=str,
+            output_type=str,
             system_prompt=system or "You are a helpful assistant.",
         )
 
         result = agent.run_sync(prompt)
-        return result.data
+        return result.output
 
     @property
     def is_available(self) -> bool:

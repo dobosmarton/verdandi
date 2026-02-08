@@ -6,10 +6,10 @@ import json
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import structlog
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 
 from verdandi.orm import TopicReservationRow
 
@@ -71,6 +71,19 @@ class ReservationInfo(TypedDict):
     similarity: float
 
 
+class ReservationDict(TypedDict):
+    id: int
+    topic_key: str
+    topic_description: str
+    niche_category: str
+    worker_id: str
+    experiment_id: int | None
+    reserved_at: str
+    expires_at: str
+    fingerprint: str | None
+    status: str
+
+
 def idea_fingerprint(title: str, description: str) -> str:
     """Create a normalized keyword fingerprint for fast dedup comparison."""
     text_ = f"{title} {description}".lower()
@@ -107,16 +120,19 @@ class TopicReservationManager:
     def expire_stale(self) -> int:
         """Expire reservations past their TTL. Returns number expired."""
         with self._session_factory() as session:
-            result = session.execute(
-                update(TopicReservationRow)
-                .where(
-                    TopicReservationRow.status == "active",
-                    TopicReservationRow.expires_at < _utcnow_str(),
-                )
-                .values(status="expired")
+            result = cast(
+                "CursorResult[Any]",
+                session.execute(
+                    update(TopicReservationRow)
+                    .where(
+                        TopicReservationRow.status == "active",
+                        TopicReservationRow.expires_at < _utcnow_str(),
+                    )
+                    .values(status="expired")
+                ),
             )
             session.commit()
-            return result.rowcount
+            return int(result.rowcount)
 
     def try_reserve(
         self,
@@ -137,6 +153,7 @@ class TopicReservationManager:
         with self._session_factory() as session:
             # Use raw DBAPI connection for BEGIN IMMEDIATE (SQLite atomicity)
             raw_conn = session.connection().connection.dbapi_connection
+            assert raw_conn is not None, "DBAPI connection unavailable"
             raw_conn.execute("BEGIN IMMEDIATE")
             try:
                 # Expire stale reservations inline
@@ -188,17 +205,20 @@ class TopicReservationManager:
         """Explicitly release a reservation. Returns True if found and released."""
         new_status = "completed" if completed else "released"
         with self._session_factory() as session:
-            result = session.execute(
-                update(TopicReservationRow)
-                .where(
-                    TopicReservationRow.topic_key == topic_key,
-                    TopicReservationRow.worker_id == worker_id,
-                    TopicReservationRow.status == "active",
-                )
-                .values(status=new_status, released_at=_utcnow_str())
+            result = cast(
+                "CursorResult[Any]",
+                session.execute(
+                    update(TopicReservationRow)
+                    .where(
+                        TopicReservationRow.topic_key == topic_key,
+                        TopicReservationRow.worker_id == worker_id,
+                        TopicReservationRow.status == "active",
+                    )
+                    .values(status=new_status, released_at=_utcnow_str())
+                ),
             )
             session.commit()
-            return result.rowcount == 1
+            return bool(result.rowcount == 1)
 
     def renew(
         self,
@@ -212,17 +232,20 @@ class TopicReservationManager:
         )
 
         with self._session_factory() as session:
-            result = session.execute(
-                update(TopicReservationRow)
-                .where(
-                    TopicReservationRow.topic_key == topic_key,
-                    TopicReservationRow.worker_id == worker_id,
-                    TopicReservationRow.status == "active",
-                )
-                .values(expires_at=new_expires, renewed_at=_utcnow_str())
+            result = cast(
+                "CursorResult[Any]",
+                session.execute(
+                    update(TopicReservationRow)
+                    .where(
+                        TopicReservationRow.topic_key == topic_key,
+                        TopicReservationRow.worker_id == worker_id,
+                        TopicReservationRow.status == "active",
+                    )
+                    .values(expires_at=new_expires, renewed_at=_utcnow_str())
+                ),
             )
             session.commit()
-            return result.rowcount == 1
+            return bool(result.rowcount == 1)
 
     def find_similar_by_fingerprint(
         self,
@@ -266,7 +289,7 @@ class TopicReservationManager:
         # TODO: Implement when sentence-transformers is added
         return []
 
-    def list_active(self) -> list[dict]:
+    def list_active(self) -> list[ReservationDict]:
         """List all active topic reservations."""
         with self._session_factory() as session:
             rows = session.scalars(
@@ -275,39 +298,40 @@ class TopicReservationManager:
                 .order_by(TopicReservationRow.reserved_at)
             ).all()
             return [
-                {
-                    "id": r.id,
-                    "topic_key": r.topic_key,
-                    "topic_description": r.topic_description,
-                    "niche_category": r.niche_category,
-                    "worker_id": r.worker_id,
-                    "experiment_id": r.experiment_id,
-                    "reserved_at": r.reserved_at,
-                    "expires_at": r.expires_at,
-                    "fingerprint": r.fingerprint,
-                }
+                ReservationDict(
+                    id=r.id,
+                    topic_key=r.topic_key,
+                    topic_description=r.topic_description,
+                    niche_category=r.niche_category,
+                    worker_id=r.worker_id,
+                    experiment_id=r.experiment_id,
+                    reserved_at=r.reserved_at,
+                    expires_at=r.expires_at,
+                    fingerprint=r.fingerprint,
+                    status="active",
+                )
                 for r in rows
             ]
 
-    def list_all(self) -> list[dict]:
+    def list_all(self) -> list[ReservationDict]:
         """List all topic reservations (including expired/released/completed)."""
         with self._session_factory() as session:
             rows = session.scalars(
                 select(TopicReservationRow).order_by(TopicReservationRow.id)
             ).all()
             return [
-                {
-                    "id": r.id,
-                    "topic_key": r.topic_key,
-                    "topic_description": r.topic_description,
-                    "niche_category": r.niche_category,
-                    "worker_id": r.worker_id,
-                    "experiment_id": r.experiment_id,
-                    "reserved_at": r.reserved_at,
-                    "expires_at": r.expires_at,
-                    "status": r.status,
-                    "fingerprint": r.fingerprint,
-                }
+                ReservationDict(
+                    id=r.id,
+                    topic_key=r.topic_key,
+                    topic_description=r.topic_description,
+                    niche_category=r.niche_category,
+                    worker_id=r.worker_id,
+                    experiment_id=r.experiment_id,
+                    reserved_at=r.reserved_at,
+                    expires_at=r.expires_at,
+                    fingerprint=r.fingerprint,
+                    status=r.status,
+                )
                 for r in rows
             ]
 

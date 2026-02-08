@@ -7,9 +7,28 @@ Best for TAM estimation and competitive landscape synthesis.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import structlog
 
 logger = structlog.get_logger()
+
+
+class TokenUsage(TypedDict):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class PerplexityResult(TypedDict):
+    answer: str
+    citations: list[str]
+    model: str
+    usage: TokenUsage
+
+
+class PerplexityDeepResult(PerplexityResult):
+    sources_analyzed: int
 
 
 class PerplexityClient:
@@ -23,7 +42,7 @@ class PerplexityClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def query(self, question: str) -> dict:
+    async def query(self, question: str) -> PerplexityResult:
         """Ask a question via the Perplexity Sonar API.
 
         Uses the sonar model for fast, cited answers from multiple sources.
@@ -65,7 +84,7 @@ class PerplexityClient:
         logger.info("Perplexity query: %r", question)
         return self._mock_query(question)
 
-    async def deep_research(self, question: str) -> dict:
+    async def deep_research(self, question: str) -> PerplexityDeepResult:
         """Run Perplexity Deep Research for comprehensive analysis.
 
         More expensive (~$0.41-$1.32 per query) but performs multi-step
@@ -113,7 +132,7 @@ class PerplexityClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_query(self, question: str) -> dict:
+    def _mock_query(self, question: str) -> PerplexityResult:
         return {
             "answer": (
                 f"Based on multiple sources, here is what we know about "
@@ -136,7 +155,7 @@ class PerplexityClient:
             },
         }
 
-    def _mock_deep_research(self, question: str) -> dict:
+    def _mock_deep_research(self, question: str) -> PerplexityDeepResult:
         return {
             "answer": (
                 f"## Deep Research: {question}\n\n"

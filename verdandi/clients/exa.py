@@ -8,10 +8,27 @@ niche communities. $10 one-time free credit (~2,000 searches).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class ExaSearchResult(TypedDict):
+    title: str
+    url: str
+    text: str
+    score: float
+    published_date: str
+    author: str | None
+
+
+class ExaSimilarResult(TypedDict):
+    title: str
+    url: str
+    score: float
+    text: str
 
 
 class ExaClient:
@@ -25,7 +42,7 @@ class ExaClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def search(self, query: str, num_results: int = 10) -> list[dict]:
+    async def search(self, query: str, num_results: int = 10) -> list[ExaSearchResult]:
         """Semantic search - find results by meaning, not just keywords.
 
         Args:
@@ -60,7 +77,7 @@ class ExaClient:
         logger.info("Exa search: %r (num_results=%d)", query, num_results)
         return self._mock_search(query, num_results)
 
-    async def find_similar(self, url: str) -> list[dict]:
+    async def find_similar(self, url: str) -> list[ExaSimilarResult]:
         """Find websites similar to a given URL.
 
         Useful for competitor discovery - provide a known competitor URL
@@ -97,8 +114,8 @@ class ExaClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_search(self, query: str, num_results: int) -> list[dict]:
-        results = []
+    def _mock_search(self, query: str, num_results: int) -> list[ExaSearchResult]:
+        results: list[ExaSearchResult] = []
         mock_sites = [
             ("Innovative SaaS Platform", "https://example-saas.com"),
             ("Enterprise Solution Provider", "https://enterprise-tool.io"),
@@ -124,7 +141,7 @@ class ExaClient:
             )
         return results
 
-    def _mock_find_similar(self, url: str) -> list[dict]:
+    def _mock_find_similar(self, url: str) -> list[ExaSimilarResult]:
         return [
             {
                 "title": "Similar Company A",

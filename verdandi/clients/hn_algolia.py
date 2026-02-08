@@ -8,10 +8,32 @@ Docs: https://hn.algolia.com/api
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class HNStory(TypedDict):
+    title: str
+    url: str | None
+    author: str
+    points: int
+    num_comments: int
+    created_at: str
+    objectID: str
+    tags: str
+
+
+class HNComment(TypedDict):
+    comment_text: str
+    author: str
+    story_title: str
+    story_url: str | None
+    points: int
+    created_at: str
+    objectID: str
 
 
 class HNClient:
@@ -25,7 +47,7 @@ class HNClient:
         # HN Algolia API is free and requires no authentication.
         return True
 
-    async def search(self, query: str, tags: str = "story") -> list[dict]:
+    async def search(self, query: str, tags: str = "story") -> list[HNStory]:
         """Search Hacker News stories.
 
         Args:
@@ -53,7 +75,7 @@ class HNClient:
         logger.info("HN search: %r (tags=%s)", query, tags)
         return self._mock_search(query, tags)
 
-    async def search_comments(self, query: str) -> list[dict]:
+    async def search_comments(self, query: str) -> list[HNComment]:
         """Search Hacker News comments for pain points and discussions.
 
         Comments often contain the most valuable insights about what
@@ -86,7 +108,7 @@ class HNClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_search(self, query: str, tags: str) -> list[dict]:
+    def _mock_search(self, query: str, tags: str) -> list[HNStory]:
         now = datetime.now(UTC).isoformat()
         return [
             {
@@ -121,7 +143,7 @@ class HNClient:
             },
         ]
 
-    def _mock_search_comments(self, query: str) -> list[dict]:
+    def _mock_search_comments(self, query: str) -> list[HNComment]:
         now = datetime.now(UTC).isoformat()
         return [
             {

@@ -8,9 +8,32 @@ API docs: https://porkbun.com/api/json/v3/documentation
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import structlog
 
 logger = structlog.get_logger()
+
+
+class DomainAvailability(TypedDict):
+    domain: str
+    available: bool
+    price: str
+    currency: str
+
+
+class DomainRegistration(TypedDict):
+    domain: str
+    registered: bool
+    expiry_date: str
+    nameservers: list[str]
+    price_paid: str
+
+
+class NameserverUpdate(TypedDict):
+    domain: str
+    nameservers: list[str]
+    updated: bool
 
 
 class PorkbunClient:
@@ -25,14 +48,14 @@ class PorkbunClient:
     def is_available(self) -> bool:
         return bool(self.api_key and self.secret_key)
 
-    def _auth_payload(self) -> dict:
+    def _auth_payload(self) -> dict[str, str]:
         """Return the authentication payload required by all Porkbun endpoints."""
         return {
             "apikey": self.api_key,
             "secretapikey": self.secret_key,
         }
 
-    async def check_availability(self, domain: str) -> dict:
+    async def check_availability(self, domain: str) -> DomainAvailability:
         """Check if a domain is available for registration.
 
         Args:
@@ -63,7 +86,7 @@ class PorkbunClient:
         logger.info("Porkbun check availability: %s", domain)
         return self._mock_check_availability(domain)
 
-    async def register_domain(self, domain: str) -> dict:
+    async def register_domain(self, domain: str) -> DomainRegistration:
         """Purchase and register a domain.
 
         Args:
@@ -95,7 +118,7 @@ class PorkbunClient:
         logger.info("Porkbun register domain: %s", domain)
         return self._mock_register_domain(domain)
 
-    async def set_nameservers(self, domain: str, nameservers: list[str]) -> dict:
+    async def set_nameservers(self, domain: str, nameservers: list[str]) -> NameserverUpdate:
         """Update nameservers for a domain (e.g., point to Cloudflare).
 
         Args:
@@ -132,7 +155,7 @@ class PorkbunClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_check_availability(self, domain: str) -> dict:
+    def _mock_check_availability(self, domain: str) -> DomainAvailability:
         tld = domain.rsplit(".", 1)[-1] if "." in domain else "com"
         prices = {"com": "9.73", "dev": "11.98", "app": "13.98", "io": "29.88"}
         return {
@@ -142,7 +165,7 @@ class PorkbunClient:
             "currency": "USD",
         }
 
-    def _mock_register_domain(self, domain: str) -> dict:
+    def _mock_register_domain(self, domain: str) -> DomainRegistration:
         tld = domain.rsplit(".", 1)[-1] if "." in domain else "com"
         prices = {"com": "9.73", "dev": "11.98", "app": "13.98", "io": "29.88"}
         return {
@@ -156,7 +179,7 @@ class PorkbunClient:
             "price_paid": prices.get(tld, "9.99"),
         }
 
-    def _mock_set_nameservers(self, domain: str, nameservers: list[str]) -> dict:
+    def _mock_set_nameservers(self, domain: str, nameservers: list[str]) -> NameserverUpdate:
         return {
             "domain": domain,
             "nameservers": nameservers,

@@ -26,9 +26,9 @@ def list_reservations(
             topic_key=r["topic_key"],
             topic_description=r["topic_description"],
             worker_id=r["worker_id"],
-            reserved_at=r.get("reserved_at"),
-            expires_at=r.get("expires_at"),
-            status=r.get("status"),
+            reserved_at=r["reserved_at"],
+            expires_at=r["expires_at"],
+            status=r["status"],
         )
         for r in rows
     ]

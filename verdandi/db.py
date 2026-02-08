@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from sqlalchemy import select, text
 
@@ -22,6 +22,26 @@ if TYPE_CHECKING:
 
     from sqlalchemy import Engine
     from sqlalchemy.orm import Session, sessionmaker
+
+
+class StepResultDict(TypedDict):
+    id: int
+    experiment_id: int
+    step_name: str
+    step_number: int
+    data: object
+    worker_id: str
+    created_at: str
+
+
+class LogEntryDict(TypedDict):
+    id: int
+    experiment_id: int | None
+    step_name: str
+    event: str
+    message: str
+    worker_id: str
+    created_at: str
 
 
 class Database:
@@ -160,7 +180,7 @@ class Database:
             session.commit()
             return row.id
 
-    def get_step_result(self, experiment_id: int, step_name: str) -> dict | None:
+    def get_step_result(self, experiment_id: int, step_name: str) -> StepResultDict | None:
         with self._session_factory() as session:
             stmt = select(StepResultRow).where(
                 StepResultRow.experiment_id == experiment_id,
@@ -171,7 +191,7 @@ class Database:
                 return None
             return self._step_row_to_dict(row)
 
-    def get_all_step_results(self, experiment_id: int) -> list[dict]:
+    def get_all_step_results(self, experiment_id: int) -> list[StepResultDict]:
         with self._session_factory() as session:
             stmt = (
                 select(StepResultRow)
@@ -202,7 +222,7 @@ class Database:
             session.add(row)
             session.commit()
 
-    def get_log(self, experiment_id: int) -> list[dict]:
+    def get_log(self, experiment_id: int) -> list[LogEntryDict]:
         with self._session_factory() as session:
             stmt = (
                 select(PipelineLogRow)
@@ -226,6 +246,16 @@ class Database:
     # --- Helpers ---
 
     @staticmethod
+    def _parse_dt(value: str) -> datetime:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    @staticmethod
+    def _parse_dt_opt(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    @staticmethod
     def _row_to_experiment(row: ExperimentRow) -> Experiment:
         return Experiment(
             id=row.id,
@@ -236,13 +266,13 @@ class Database:
             worker_id=row.worker_id,
             reviewed_by=row.reviewed_by,
             review_notes=row.review_notes,
-            reviewed_at=row.reviewed_at,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
+            reviewed_at=Database._parse_dt_opt(row.reviewed_at),
+            created_at=Database._parse_dt(row.created_at),
+            updated_at=Database._parse_dt(row.updated_at),
         )
 
     @staticmethod
-    def _step_row_to_dict(row: StepResultRow) -> dict:
+    def _step_row_to_dict(row: StepResultRow) -> StepResultDict:
         return {
             "id": row.id,
             "experiment_id": row.experiment_id,

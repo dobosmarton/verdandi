@@ -8,10 +8,38 @@ REST API for programmatic data retrieval and website management.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class UmamiWebsite(TypedDict):
+    id: str
+    name: str
+    domain: str
+    tracking_code: str
+
+
+class UmamiStatValue(TypedDict):
+    value: int | float
+    change: int | float
+
+
+class UmamiStats(TypedDict):
+    pageviews: UmamiStatValue
+    visitors: UmamiStatValue
+    visits: UmamiStatValue
+    bounce_rate: UmamiStatValue
+    total_time: UmamiStatValue
+    avg_time: UmamiStatValue
+
+
+class UmamiEvent(TypedDict):
+    event_name: str
+    count: int
+    last_at: str
 
 
 class UmamiClient:
@@ -31,7 +59,7 @@ class UmamiClient:
             "Content-Type": "application/json",
         }
 
-    async def create_website(self, name: str, domain: str) -> dict:
+    async def create_website(self, name: str, domain: str) -> UmamiWebsite:
         """Register a new website in Umami for tracking.
 
         Args:
@@ -69,7 +97,7 @@ class UmamiClient:
         logger.info("Umami create website: %s (%s)", name, domain)
         return self._mock_create_website(name, domain)
 
-    async def get_stats(self, website_id: str, start_at: int, end_at: int) -> dict:
+    async def get_stats(self, website_id: str, start_at: int, end_at: int) -> UmamiStats:
         """Get aggregate statistics for a website over a time range.
 
         Args:
@@ -102,7 +130,7 @@ class UmamiClient:
         )
         return self._mock_get_stats(website_id)
 
-    async def get_events(self, website_id: str) -> list[dict]:
+    async def get_events(self, website_id: str) -> list[UmamiEvent]:
         """Get custom events (CTA clicks, form submissions, etc.).
 
         Events are tracked in the landing page via umami.track('event-name').
@@ -132,7 +160,7 @@ class UmamiClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_create_website(self, name: str, domain: str) -> dict:
+    def _mock_create_website(self, name: str, domain: str) -> UmamiWebsite:
         mock_id = f"mock-{domain.replace('.', '-')}"
         umami_url = self.base_url or "https://analytics.example.com"
         return {
@@ -144,7 +172,7 @@ class UmamiClient:
             ),
         }
 
-    def _mock_get_stats(self, website_id: str) -> dict:
+    def _mock_get_stats(self, website_id: str) -> UmamiStats:
         return {
             "pageviews": {"value": 847, "change": 23},
             "visitors": {"value": 312, "change": 15},
@@ -154,7 +182,7 @@ class UmamiClient:
             "avg_time": {"value": 362, "change": 12},
         }
 
-    def _mock_get_events(self, website_id: str) -> list[dict]:
+    def _mock_get_events(self, website_id: str) -> list[UmamiEvent]:
         now = datetime.now(UTC).isoformat()
         return [
             {"event_name": "cta-click", "count": 47, "last_at": now},

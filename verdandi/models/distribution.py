@@ -16,7 +16,7 @@ class SocialPost(BaseModel):
     content: str
     url: str = Field(default="", description="URL of the published post")
     posted: bool = False
-    engagement: dict = Field(
+    engagement: dict[str, int] = Field(
         default_factory=dict,
         description="Likes, comments, shares if available",
     )

@@ -8,10 +8,24 @@ a supplementary distribution channel.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class BlueskySession(TypedDict):
+    did: str
+    accessJwt: str
+
+
+class BlueskyPostResult(TypedDict):
+    uri: str
+    cid: str
+    text: str
+    created_at: str
+    url: str
 
 
 class BlueskyClient:
@@ -21,7 +35,7 @@ class BlueskyClient:
         self.handle = handle
         self.app_password = app_password
         self.base_url = "https://bsky.social/xrpc"
-        self._session: dict | None = None
+        self._session: BlueskySession | None = None
 
     @property
     def is_available(self) -> bool:
@@ -47,7 +61,7 @@ class BlueskyClient:
             "accessJwt": "mock-jwt-token",
         }
 
-    async def post(self, text: str) -> dict:
+    async def post(self, text: str) -> BlueskyPostResult:
         """Create a Bluesky post (skeet).
 
         Args:
@@ -98,7 +112,7 @@ class BlueskyClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_post(self, text: str) -> dict:
+    def _mock_post(self, text: str) -> BlueskyPostResult:
         now = datetime.now(UTC).isoformat()
         mock_rkey = "3abc123def456"
         handle = self.handle or "user.bsky.social"

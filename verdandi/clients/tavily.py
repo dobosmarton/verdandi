@@ -7,10 +7,31 @@ Free tier: 1,000 searches/month. Paid: $0.008 per basic search.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class TavilySearchResult(TypedDict):
+    title: str
+    url: str
+    content: str
+    score: float
+    published_date: str
+
+
+class TavilySource(TypedDict):
+    title: str
+    url: str
+    relevance: float
+
+
+class TavilyResearchResult(TypedDict):
+    summary: str
+    sources: list[TavilySource]
+    follow_up_questions: list[str]
 
 
 class TavilyClient:
@@ -24,7 +45,7 @@ class TavilyClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def search(self, query: str, max_results: int = 5) -> list[dict]:
+    async def search(self, query: str, max_results: int = 5) -> list[TavilySearchResult]:
         """Search the web using Tavily's AI-optimized search.
 
         Args:
@@ -55,7 +76,7 @@ class TavilyClient:
         logger.info("Tavily search: %r (max_results=%d)", query, max_results)
         return self._mock_search(query, max_results)
 
-    async def research(self, query: str) -> dict:
+    async def research(self, query: str) -> TavilyResearchResult:
         """Run Tavily's multi-step deep research mode.
 
         This endpoint performs agent-mode research with multiple search
@@ -89,7 +110,7 @@ class TavilyClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_search(self, query: str, max_results: int) -> list[dict]:
+    def _mock_search(self, query: str, max_results: int) -> list[TavilySearchResult]:
         return [
             {
                 "title": f"Mock result {i + 1} for '{query}'",
@@ -105,7 +126,7 @@ class TavilyClient:
             for i in range(min(max_results, 3))
         ]
 
-    def _mock_research(self, query: str) -> dict:
+    def _mock_research(self, query: str) -> TavilyResearchResult:
         return {
             "summary": (
                 f"Mock research summary for '{query}'. "

@@ -8,10 +8,42 @@ DNS zone management for custom domain setup.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TypedDict
 
 import structlog
 
 logger = structlog.get_logger()
+
+
+class PagesProject(TypedDict):
+    name: str
+    subdomain: str
+    id: str
+    created_on: str
+
+
+class PagesDeployment(TypedDict):
+    id: str
+    url: str
+    environment: str
+    created_on: str
+    files_uploaded: list[str]
+
+
+class DnsZone(TypedDict):
+    id: str
+    name: str
+    nameservers: list[str]
+    status: str
+
+
+class DnsRecord(TypedDict):
+    id: str
+    type: str
+    name: str
+    content: str
+    proxied: bool
+    ttl: int
 
 
 class CloudflareClient:
@@ -32,7 +64,7 @@ class CloudflareClient:
             "Content-Type": "application/json",
         }
 
-    async def create_pages_project(self, name: str) -> dict:
+    async def create_pages_project(self, name: str) -> PagesProject:
         """Create a new Cloudflare Pages project.
 
         Args:
@@ -67,7 +99,7 @@ class CloudflareClient:
         logger.info("Cloudflare create Pages project: %s", name)
         return self._mock_create_pages_project(name)
 
-    async def deploy_pages(self, project_name: str, files: dict[str, str]) -> dict:
+    async def deploy_pages(self, project_name: str, files: dict[str, str]) -> PagesDeployment:
         """Deploy files to a Cloudflare Pages project via Direct Upload.
 
         Args:
@@ -112,7 +144,7 @@ class CloudflareClient:
         )
         return self._mock_deploy_pages(project_name, files)
 
-    async def add_zone(self, domain: str) -> dict:
+    async def add_zone(self, domain: str) -> DnsZone:
         """Add a DNS zone for a domain to Cloudflare.
 
         After adding, configure the domain's nameservers at the registrar
@@ -156,7 +188,7 @@ class CloudflareClient:
         record_type: str,
         name: str,
         content: str,
-    ) -> dict:
+    ) -> DnsRecord:
         """Add a DNS record to a Cloudflare zone.
 
         Args:
@@ -208,7 +240,7 @@ class CloudflareClient:
     # Mock data
     # ------------------------------------------------------------------
 
-    def _mock_create_pages_project(self, name: str) -> dict:
+    def _mock_create_pages_project(self, name: str) -> PagesProject:
         return {
             "name": name,
             "subdomain": f"{name}.pages.dev",
@@ -216,7 +248,7 @@ class CloudflareClient:
             "created_on": datetime.now(UTC).isoformat(),
         }
 
-    def _mock_deploy_pages(self, project_name: str, files: dict[str, str]) -> dict:
+    def _mock_deploy_pages(self, project_name: str, files: dict[str, str]) -> PagesDeployment:
         return {
             "id": f"mock-deploy-{project_name}-001",
             "url": f"https://{project_name}.pages.dev",
@@ -225,7 +257,7 @@ class CloudflareClient:
             "files_uploaded": list(files.keys()),
         }
 
-    def _mock_add_zone(self, domain: str) -> dict:
+    def _mock_add_zone(self, domain: str) -> DnsZone:
         return {
             "id": f"mock-zone-{domain.replace('.', '-')}",
             "name": domain,
@@ -242,7 +274,7 @@ class CloudflareClient:
         record_type: str,
         name: str,
         content: str,
-    ) -> dict:
+    ) -> DnsRecord:
         return {
             "id": f"mock-record-{name}-{record_type}",
             "type": record_type,

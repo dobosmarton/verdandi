@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import TypedDict
 
 from verdandi.models.base import BaseStepResult
+
+
+class FeatureItem(TypedDict):
+    title: str
+    description: str
+    icon: str
+
+
+class StatItem(TypedDict):
+    value: str
+    label: str
 
 
 class Testimonial(BaseModel):
@@ -39,14 +51,14 @@ class LandingPageContent(BaseStepResult):
 
     # Features section
     features_title: str = "Features"
-    features: list[dict] = Field(
+    features: list[FeatureItem] = Field(
         default_factory=list,
         description="List of {title, description, icon} dicts",
     )
 
     # Social proof
     testimonials: list[Testimonial] = Field(default_factory=list)
-    stats: list[dict] = Field(
+    stats: list[StatItem] = Field(
         default_factory=list,
         description="List of {value, label} dicts, e.g. {'value': '10x', 'label': 'faster'}",
     )

@@ -10,7 +10,10 @@ import structlog
 from verdandi.models.experiment import Experiment, ExperimentStatus
 from verdandi.models.scoring import Decision
 from verdandi.retry import CircuitBreaker, with_retry
-from verdandi.steps.base import StepContext, get_step_registry
+from verdandi.steps.base import AbstractStep, StepContext, get_step_registry
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from verdandi.config import Settings
@@ -114,8 +117,16 @@ class PipelineRunner:
 
             try:
                 breaker = self._get_breaker(step.name)
+
+                def _run_step(
+                    _b: CircuitBreaker = breaker,
+                    _s: AbstractStep = step,
+                    _c: StepContext = ctx,
+                ) -> BaseModel:
+                    return _b.call(lambda: _s.run(_c))
+
                 result = with_retry(
-                    fn=lambda _b=breaker, _s=step, _c=ctx: _b.call(lambda: _s.run(_c)),
+                    fn=_run_step,
                     max_retries=self.settings.max_retries,
                     jitter=True,
                 )
@@ -153,23 +164,27 @@ class PipelineRunner:
             )
 
             # Refresh experiment state
-            exp = self.db.get_experiment(experiment_id)  # type: ignore[assignment]
+            exp = self.db.get_experiment(experiment_id)
+            if exp is None:
+                raise RuntimeError(f"Experiment {experiment_id} disappeared mid-pipeline")
 
             # Gate: scoring step produces GO/NO_GO
             if step.name == "scoring":
                 scoring_result = self.db.get_step_result(experiment_id, "scoring")
-                if scoring_result and scoring_result["data"].get("decision") == Decision.NO_GO:
-                    logger.info("Experiment scored NO_GO — stopping")
-                    self.db.update_experiment_status(
-                        experiment_id, ExperimentStatus.NO_GO, current_step=step_num
-                    )
-                    self.db.log_event(
-                        "pipeline_nogo",
-                        "Pre-build score below threshold",
-                        experiment_id=experiment_id,
-                        worker_id=self.settings.worker_id,
-                    )
-                    return
+                if scoring_result:
+                    data = scoring_result["data"]
+                    if isinstance(data, dict) and data.get("decision") == Decision.NO_GO:
+                        logger.info("Experiment scored NO_GO — stopping")
+                        self.db.update_experiment_status(
+                            experiment_id, ExperimentStatus.NO_GO, current_step=step_num
+                        )
+                        self.db.log_event(
+                            "pipeline_nogo",
+                            "Pre-build score below threshold",
+                            experiment_id=experiment_id,
+                            worker_id=self.settings.worker_id,
+                        )
+                        return
 
             # Gate: human review
             if step.name == "human_review" and exp.status == ExperimentStatus.AWAITING_REVIEW:
@@ -232,9 +247,10 @@ class PipelineRunner:
                 worker_id=self.settings.worker_id,
             )
             exp = self.db.create_experiment(exp)
+            assert exp.id is not None
             # Save the idea as step 0 result
             self.db.save_step_result(
-                experiment_id=exp.id,  # type: ignore[arg-type]
+                experiment_id=exp.id,
                 step_name="idea_discovery",
                 step_number=0,
                 data_json=idea.model_dump_json(),
@@ -246,12 +262,13 @@ class PipelineRunner:
                 experiment_id=exp.id,
                 worker_id=self.settings.worker_id,
             )
-            experiment_ids.append(exp.id)  # type: ignore[arg-type]
+            experiment_ids.append(exp.id)
 
         # Mark discovery batch experiment as completed
+        assert temp_exp.id is not None
         self.db.update_experiment_status(
             temp_exp.id,
-            ExperimentStatus.COMPLETED,  # type: ignore[arg-type]
+            ExperimentStatus.COMPLETED,
         )
 
         # Run discovery multiple times for max_ideas
@@ -264,8 +281,9 @@ class PipelineRunner:
                 worker_id=self.settings.worker_id,
             )
             exp = self.db.create_experiment(exp)
+            assert exp.id is not None
             self.db.save_step_result(
-                experiment_id=exp.id,  # type: ignore[arg-type]
+                experiment_id=exp.id,
                 step_name="idea_discovery",
                 step_number=0,
                 data_json=result.model_dump_json(),
@@ -277,7 +295,7 @@ class PipelineRunner:
                 experiment_id=exp.id,
                 worker_id=self.settings.worker_id,
             )
-            experiment_ids.append(exp.id)  # type: ignore[arg-type]
+            experiment_ids.append(exp.id)
 
         logger.info("Discovery batch complete", count=len(experiment_ids))
         return experiment_ids
