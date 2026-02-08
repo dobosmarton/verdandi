@@ -1,0 +1,104 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "verdandi"
+version = "0.1.0"
+description = "Autonomous product validation factory"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40.0",
+    "pydantic-ai[anthropic,logfire]>=1.56.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "click>=8.1.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.0",
+    "huey>=2.5.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "structlog>=24.4.0",
+    "sqlalchemy>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "hypothesis>=6.100",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+
+[project.scripts]
+verdandi = "verdandi.cli:cli"
+verdandi-api = "verdandi.api.app:main"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # Pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "W",     # pycodestyle warnings
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "A",     # flake8-builtins
+    "C4",    # flake8-comprehensions
+    "SIM",   # flake8-simplify
+    "TCH",   # flake8-type-checking
+    "RUF",   # Ruff-specific rules
+    "PTH",   # flake8-use-pathlib
+    "RET",   # flake8-return
+    "ARG",   # flake8-unused-arguments
+    "PERF",  # perflint
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ARG", "PLR2004"]
+"verdandi/clients/**/*.py" = ["ARG002"]  # Stub methods with future params
+"verdandi/llm.py" = ["ARG002"]  # temperature/max_tokens used when real impl added
+"verdandi/coordination.py" = ["ARG002"]  # Stub embedding similarity
+"verdandi/cli.py" = ["ARG001"]  # Click context/options used indirectly
+"verdandi/api/routes/*.py" = ["TC001"]  # Annotated deps must be runtime imports for FastAPI DI
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+enable_error_code = [
+    "ignore-without-code",
+    "redundant-cast",
+    "truthy-bool",
+    "truthy-iterable",
+    "unused-awaitable",
+]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = [
+    "huey.*",
+    "pydantic_ai.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
