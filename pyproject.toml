@@ -27,6 +27,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "hypothesis>=6.100",
+    "respx>=0.22.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
 ]
@@ -65,7 +66,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["ARG", "PLR2004"]
 "verdandi/clients/**/*.py" = ["ARG002"]  # Stub methods with future params
-"verdandi/llm.py" = ["ARG002"]  # temperature/max_tokens used when real impl added
+"verdandi/research.py" = ["TCH001"]  # TypedDict imports needed at runtime for Pydantic model fields
+"verdandi/llm.py" = ["ARG002"]  # generate_text temperature/max_tokens passthrough TBD
 "verdandi/coordination.py" = ["ARG002"]  # Stub embedding similarity
 "verdandi/cli.py" = ["ARG001"]  # Click context/options used indirectly
 "verdandi/api/routes/*.py" = ["TC001"]  # Annotated deps must be runtime imports for FastAPI DI

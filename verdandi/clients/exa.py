@@ -1,4 +1,4 @@
-"""Client stub for Exa.ai semantic search API.
+"""Client for Exa.ai semantic search API.
 
 Exa provides neural/semantic search, finding results by meaning rather
 than keywords. Especially valuable for competitor discovery and finding
@@ -8,11 +8,14 @@ niche communities. $10 one-time free credit (~2,000 searches).
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TypedDict
 
+import httpx
 import structlog
+from typing_extensions import TypedDict
 
 logger = structlog.get_logger()
+
+_TIMEOUT = 30.0
 
 
 class ExaSearchResult(TypedDict):
@@ -32,7 +35,7 @@ class ExaSimilarResult(TypedDict):
 
 
 class ExaClient:
-    """Exa.ai API client. Returns mock data until API key is configured."""
+    """Exa.ai API client. Returns mock data when no API key is configured."""
 
     def __init__(self, api_key: str = "") -> None:
         self.api_key = api_key
@@ -42,7 +45,7 @@ class ExaClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def search(self, query: str, num_results: int = 10) -> list[ExaSearchResult]:
+    def search(self, query: str, num_results: int = 10) -> list[ExaSearchResult]:
         """Semantic search - find results by meaning, not just keywords.
 
         Args:
@@ -58,26 +61,42 @@ class ExaClient:
             logger.debug("Exa not configured, returning mock data")
             return self._mock_search(query, num_results)
 
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/search",
-        #         headers={"x-api-key": self.api_key},
-        #         json={
-        #             "query": query,
-        #             "numResults": num_results,
-        #             "type": "neural",
-        #             "useAutoprompt": True,
-        #             "contents": {"text": True},
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return data.get("results", [])
-        logger.info("Exa search: %r (num_results=%d)", query, num_results)
-        return self._mock_search(query, num_results)
+        logger.info("exa_search", query=query, num_results=num_results)
+        try:
+            with httpx.Client(timeout=_TIMEOUT) as client:
+                resp = client.post(
+                    f"{self.base_url}/search",
+                    headers={"x-api-key": self.api_key},
+                    json={
+                        "query": query,
+                        "numResults": num_results,
+                        "type": "neural",
+                        "useAutoprompt": True,
+                        "contents": {"text": True},
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                raw_results: list[dict[str, object]] = []
+                results_value = data.get("results")
+                if isinstance(results_value, list):
+                    raw_results.extend(item for item in results_value if isinstance(item, dict))
+                return [
+                    ExaSearchResult(
+                        title=str(hit.get("title", "")),
+                        url=str(hit.get("url", "")),
+                        text=str(hit.get("text", "")),
+                        score=float(str(hit.get("score", "0.0"))),
+                        published_date=str(hit.get("publishedDate", "")),
+                        author=str(hit.get("author", "")) or None,
+                    )
+                    for hit in raw_results
+                ]
+        except httpx.HTTPError as exc:
+            logger.warning("exa_search_failed", error=str(exc), query=query)
+            return self._mock_search(query, num_results)
 
-    async def find_similar(self, url: str) -> list[ExaSimilarResult]:
+    def find_similar(self, url: str) -> list[ExaSimilarResult]:
         """Find websites similar to a given URL.
 
         Useful for competitor discovery - provide a known competitor URL
@@ -93,22 +112,36 @@ class ExaClient:
             logger.debug("Exa not configured, returning mock similar data")
             return self._mock_find_similar(url)
 
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/findSimilar",
-        #         headers={"x-api-key": self.api_key},
-        #         json={
-        #             "url": url,
-        #             "numResults": 10,
-        #             "contents": {"text": True},
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return data.get("results", [])
-        logger.info("Exa find_similar: %r", url)
-        return self._mock_find_similar(url)
+        logger.info("exa_find_similar", url=url)
+        try:
+            with httpx.Client(timeout=_TIMEOUT) as client:
+                resp = client.post(
+                    f"{self.base_url}/findSimilar",
+                    headers={"x-api-key": self.api_key},
+                    json={
+                        "url": url,
+                        "numResults": 10,
+                        "contents": {"text": True},
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                raw_results: list[dict[str, object]] = []
+                results_value = data.get("results")
+                if isinstance(results_value, list):
+                    raw_results.extend(item for item in results_value if isinstance(item, dict))
+                return [
+                    ExaSimilarResult(
+                        title=str(hit.get("title", "")),
+                        url=str(hit.get("url", "")),
+                        score=float(str(hit.get("score", "0.0"))),
+                        text=str(hit.get("text", "")),
+                    )
+                    for hit in raw_results
+                ]
+        except httpx.HTTPError as exc:
+            logger.warning("exa_find_similar_failed", error=str(exc), url=url)
+            return self._mock_find_similar(url)
 
     # ------------------------------------------------------------------
     # Mock data

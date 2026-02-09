@@ -1,0 +1,22 @@
+{
+  "organic": [
+    {
+      "title": "Best Developer Tools 2025 - TechCrunch",
+      "link": "https://techcrunch.com/developer-tools-2025",
+      "snippet": "A comprehensive list of the most popular developer tools launched in 2025, including automation and monitoring solutions.",
+      "position": 1
+    },
+    {
+      "title": "Developer Pain Points Survey Results",
+      "link": "https://example.com/survey-results",
+      "snippet": "78% of developers cite manual processes as their biggest productivity drain. Automation tools are in high demand.",
+      "position": 2
+    }
+  ],
+  "peopleAlsoAsk": [
+    {
+      "question": "What are the most underserved developer needs?",
+      "snippet": "Documentation, testing, and deployment automation remain the most underserved areas."
+    }
+  ]
+}

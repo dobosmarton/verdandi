@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "title": "ChangeBot - AI Changelog Generator",
+      "url": "https://changebot.io",
+      "text": "ChangeBot automatically generates beautiful changelogs from your git history using AI. Supports GitHub, GitLab, and Bitbucket. Founded 2024, serving 500+ teams.",
+      "score": 0.92,
+      "publishedDate": "2024-11-01T00:00:00Z",
+      "author": "changebot-team"
+    },
+    {
+      "title": "LogMaster - Enterprise Release Notes",
+      "url": "https://logmaster.dev",
+      "text": "Enterprise-grade release notes generation with compliance features. Pricing starts at $99/month. Series A funded, $12M raised.",
+      "score": 0.85,
+      "publishedDate": "2024-09-15T00:00:00Z",
+      "author": null
+    }
+  ]
+}

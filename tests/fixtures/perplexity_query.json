@@ -1,0 +1,23 @@
+{
+  "id": "chatcmpl-abc123",
+  "model": "sonar",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The total addressable market for developer changelog tools is estimated at $850M globally. Key players include release-please (open source, Google), conventional-changelog, and several SaaS platforms. The market is growing at 18% CAGR driven by DevOps adoption."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "citations": [
+    "https://example.com/devtools-market-2025",
+    "https://example.com/changelog-analysis"
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 185,
+    "total_tokens": 227
+  }
+}

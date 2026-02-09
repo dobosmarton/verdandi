@@ -1,0 +1,16 @@
+{
+  "organic": [
+    {
+      "title": "[Discussion] Best tools for changelog automation?",
+      "link": "https://www.reddit.com/r/SaaS/comments/abc123/best_changelog_tools",
+      "snippet": "Looking for a tool that automatically generates changelogs from git commits. Everything I've tried is either too basic or requires too much config.",
+      "position": 1
+    },
+    {
+      "title": "Why is developer tooling so fragmented?",
+      "link": "https://www.reddit.com/r/startups/comments/def456/why_developer_tooling",
+      "snippet": "Every developer tool tries to do everything. I just want a simple, focused solution for one specific problem.",
+      "position": 2
+    }
+  ]
+}

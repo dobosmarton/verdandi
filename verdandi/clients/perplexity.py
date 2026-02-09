@@ -1,4 +1,4 @@
-"""Client stub for Perplexity Sonar API.
+"""Client for Perplexity Sonar API.
 
 Perplexity synthesizes multi-source research answers with citations.
 Basic query: ~$0.006. Deep Research: ~$0.41-$1.32 per query.
@@ -7,9 +7,9 @@ Best for TAM estimation and competitive landscape synthesis.
 
 from __future__ import annotations
 
-from typing import TypedDict
-
+import httpx
 import structlog
+from typing_extensions import TypedDict
 
 logger = structlog.get_logger()
 
@@ -31,6 +31,52 @@ class PerplexityDeepResult(PerplexityResult):
     sources_analyzed: int
 
 
+def _parse_usage(data: dict[str, object]) -> TokenUsage:
+    """Extract TokenUsage from the API response, falling back to zeros."""
+    raw = data.get("usage")
+    if not isinstance(raw, dict):
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+    prompt = raw.get("prompt_tokens", 0)
+    completion = raw.get("completion_tokens", 0)
+    total = raw.get("total_tokens", 0)
+    return {
+        "prompt_tokens": prompt if isinstance(prompt, int) else 0,
+        "completion_tokens": completion if isinstance(completion, int) else 0,
+        "total_tokens": total if isinstance(total, int) else 0,
+    }
+
+
+def _parse_answer(data: dict[str, object]) -> str:
+    """Extract the answer string from the choices array."""
+    choices = data.get("choices", [])
+    if choices and isinstance(choices, list):
+        first = choices[0]
+        if isinstance(first, dict):
+            msg = first.get("message", {})
+            if isinstance(msg, dict):
+                content = msg.get("content", "")
+                return str(content)
+    return ""
+
+
+def _parse_citations(data: dict[str, object]) -> list[str]:
+    """Extract the citations list from the response."""
+    raw = data.get("citations", [])
+    if not isinstance(raw, list):
+        return []
+    return [str(c) for c in raw]
+
+
+def _parse_model(data: dict[str, object], default: str) -> str:
+    """Extract the model name from the response."""
+    raw = data.get("model", default)
+    return str(raw) if raw is not None else default
+
+
 class PerplexityClient:
     """Perplexity Sonar API client. Returns mock data until API key is configured."""
 
@@ -42,7 +88,7 @@ class PerplexityClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def query(self, question: str) -> PerplexityResult:
+    def query(self, question: str) -> PerplexityResult:
         """Ask a question via the Perplexity Sonar API.
 
         Uses the sonar model for fast, cited answers from multiple sources.
@@ -58,33 +104,40 @@ class PerplexityClient:
             logger.debug("Perplexity not configured, returning mock data")
             return self._mock_query(question)
 
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/chat/completions",
-        #         headers={
-        #             "Authorization": f"Bearer {self.api_key}",
-        #             "Content-Type": "application/json",
-        #         },
-        #         json={
-        #             "model": "sonar",
-        #             "messages": [
-        #                 {"role": "user", "content": question},
-        #             ],
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return {
-        #         "answer": data["choices"][0]["message"]["content"],
-        #         "citations": data.get("citations", []),
-        #         "model": data.get("model"),
-        #         "usage": data.get("usage"),
-        #     }
-        logger.info("Perplexity query: %r", question)
-        return self._mock_query(question)
+        logger.info("perplexity_query", question=question)
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "sonar",
+                        "messages": [
+                            {"role": "user", "content": question},
+                        ],
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "perplexity_query_failed",
+                question=question,
+                error=str(exc),
+            )
+            return self._mock_query(question)
 
-    async def deep_research(self, question: str) -> PerplexityDeepResult:
+        return {
+            "answer": _parse_answer(data),
+            "citations": _parse_citations(data),
+            "model": _parse_model(data, "sonar"),
+            "usage": _parse_usage(data),
+        }
+
+    def deep_research(self, question: str) -> PerplexityDeepResult:
         """Run Perplexity Deep Research for comprehensive analysis.
 
         More expensive (~$0.41-$1.32 per query) but performs multi-step
@@ -101,32 +154,40 @@ class PerplexityClient:
             logger.debug("Perplexity not configured, returning mock deep research")
             return self._mock_deep_research(question)
 
-        # TODO: Real API call with deep research model
-        # async with httpx.AsyncClient(timeout=120.0) as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/chat/completions",
-        #         headers={
-        #             "Authorization": f"Bearer {self.api_key}",
-        #             "Content-Type": "application/json",
-        #         },
-        #         json={
-        #             "model": "sonar-deep-research",
-        #             "messages": [
-        #                 {"role": "user", "content": question},
-        #             ],
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return {
-        #         "answer": data["choices"][0]["message"]["content"],
-        #         "citations": data.get("citations", []),
-        #         "sources_analyzed": len(data.get("citations", [])),
-        #         "model": data.get("model"),
-        #         "usage": data.get("usage"),
-        #     }
-        logger.info("Perplexity deep research: %r", question)
-        return self._mock_deep_research(question)
+        logger.info("perplexity_deep_research", question=question)
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                resp = client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "sonar-deep-research",
+                        "messages": [
+                            {"role": "user", "content": question},
+                        ],
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "perplexity_deep_research_failed",
+                question=question,
+                error=str(exc),
+            )
+            return self._mock_deep_research(question)
+
+        citations = _parse_citations(data)
+        return {
+            "answer": _parse_answer(data),
+            "citations": citations,
+            "sources_analyzed": len(citations),
+            "model": _parse_model(data, "sonar-deep-research"),
+            "usage": _parse_usage(data),
+        }
 
     # ------------------------------------------------------------------
     # Mock data

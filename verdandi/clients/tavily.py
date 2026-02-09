@@ -1,4 +1,4 @@
-"""Client stub for Tavily search API.
+"""Client for Tavily search API.
 
 Tavily provides AI-optimized web search with structured output.
 Free tier: 1,000 searches/month. Paid: $0.008 per basic search.
@@ -7,9 +7,10 @@ Free tier: 1,000 searches/month. Paid: $0.008 per basic search.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TypedDict
 
+import httpx
 import structlog
+from typing_extensions import TypedDict
 
 logger = structlog.get_logger()
 
@@ -35,7 +36,7 @@ class TavilyResearchResult(TypedDict):
 
 
 class TavilyClient:
-    """Tavily API client. Returns mock data until API key is configured."""
+    """Tavily API client. Returns mock data when API key is not configured."""
 
     def __init__(self, api_key: str = "") -> None:
         self.api_key = api_key
@@ -45,7 +46,7 @@ class TavilyClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def search(self, query: str, max_results: int = 5) -> list[TavilySearchResult]:
+    def search(self, query: str, max_results: int = 5) -> list[TavilySearchResult]:
         """Search the web using Tavily's AI-optimized search.
 
         Args:
@@ -53,30 +54,51 @@ class TavilyClient:
             max_results: Maximum number of results to return (1-20).
 
         Returns:
-            List of search result dicts with keys: title, url, content, score.
+            List of search result dicts with keys: title, url, content,
+            score, published_date.
         """
         if not self.is_available:
             logger.debug("Tavily not configured, returning mock data")
             return self._mock_search(query, max_results)
 
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/search",
-        #         json={
-        #             "api_key": self.api_key,
-        #             "query": query,
-        #             "max_results": max_results,
-        #             "search_depth": "basic",
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return data.get("results", [])
-        logger.info("Tavily search: %r (max_results=%d)", query, max_results)
-        return self._mock_search(query, max_results)
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(
+                    f"{self.base_url}/search",
+                    json={
+                        "api_key": self.api_key,
+                        "query": query,
+                        "max_results": max_results,
+                        "search_depth": "basic",
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                raw_results = data.get("results", [])
+                if not isinstance(raw_results, list):
+                    raw_results = []
+                results: list[TavilySearchResult] = []
+                for item in raw_results:
+                    if not isinstance(item, dict):
+                        continue
+                    result: TavilySearchResult = {
+                        "title": str(item.get("title", "")),
+                        "url": str(item.get("url", "")),
+                        "content": str(item.get("content", "")),
+                        "score": float(item.get("score", 0.0)),
+                        "published_date": str(item.get("published_date", "")),
+                    }
+                    results.append(result)
+                return results
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Tavily search API error, falling back to mock data",
+                query=query,
+                error=str(exc),
+            )
+            return self._mock_search(query, max_results)
 
-    async def research(self, query: str) -> TavilyResearchResult:
+    def research(self, query: str) -> TavilyResearchResult:
         """Run Tavily's multi-step deep research mode.
 
         This endpoint performs agent-mode research with multiple search
@@ -92,19 +114,50 @@ class TavilyClient:
             logger.debug("Tavily not configured, returning mock research data")
             return self._mock_research(query)
 
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/research",
-        #         json={
-        #             "api_key": self.api_key,
-        #             "query": query,
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     return resp.json()
-        logger.info("Tavily research: %r", query)
-        return self._mock_research(query)
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                resp = client.post(
+                    f"{self.base_url}/research",
+                    json={
+                        "api_key": self.api_key,
+                        "query": query,
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+
+                raw_sources = data.get("sources", [])
+                if not isinstance(raw_sources, list):
+                    raw_sources = []
+                sources: list[TavilySource] = []
+                for src in raw_sources:
+                    if not isinstance(src, dict):
+                        continue
+                    source: TavilySource = {
+                        "title": str(src.get("title", "")),
+                        "url": str(src.get("url", "")),
+                        "relevance": float(src.get("relevance", 0.0)),
+                    }
+                    sources.append(source)
+
+                raw_questions = data.get("follow_up_questions", [])
+                if not isinstance(raw_questions, list):
+                    raw_questions = []
+                follow_up_questions: list[str] = [str(q) for q in raw_questions]
+
+                result: TavilyResearchResult = {
+                    "summary": str(data.get("summary", "")),
+                    "sources": sources,
+                    "follow_up_questions": follow_up_questions,
+                }
+                return result
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Tavily research API error, falling back to mock data",
+                query=query,
+                error=str(exc),
+            )
+            return self._mock_research(query)
 
     # ------------------------------------------------------------------
     # Mock data

@@ -7,9 +7,9 @@ for product validation announcements.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TypedDict
 
 import structlog
+from typing_extensions import TypedDict
 
 logger = structlog.get_logger()
 

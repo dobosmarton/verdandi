@@ -5,11 +5,62 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING, TypedDict
 
+import structlog
+from pydantic import BaseModel, ConfigDict, Field
+
 from verdandi.models.idea import IdeaCandidate, PainPoint
 from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 if TYPE_CHECKING:
-    from pydantic import BaseModel
+    from pydantic import BaseModel as BaseModelType
+
+logger = structlog.get_logger()
+
+# ---------------------------------------------------------------------------
+# Discovery search queries
+# ---------------------------------------------------------------------------
+
+_DISCOVERY_QUERIES: list[str] = [
+    "trending micro-SaaS ideas 2025",
+    "tools developers wish existed",
+    "underserved pain points for small businesses",
+]
+
+_PERPLEXITY_QUESTION = (
+    "What are the most promising underserved software product opportunities right now?"
+)
+
+_SYSTEM_PROMPT = (
+    "You are a product discovery agent analyzing market signals for underserved "
+    "pain points. Identify ONE specific, actionable product idea that addresses "
+    "a real pain point with evidence. Focus on micro-SaaS ideas that a solo "
+    "developer could build in 1-2 weeks."
+)
+
+# ---------------------------------------------------------------------------
+# LLM output schema (content fields only — no experiment_id, worker_id, etc.)
+# ---------------------------------------------------------------------------
+
+
+class _IdeaLLMOutput(BaseModel):
+    """Structured LLM output for idea discovery — content fields only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str
+    one_liner: str
+    problem_statement: str
+    target_audience: str
+    category: str
+    pain_points: list[PainPoint]
+    existing_solutions: list[str]
+    differentiation: str
+    source_urls: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Mock data infrastructure (unchanged)
+# ---------------------------------------------------------------------------
 
 
 class _PainPointDict(TypedDict):
@@ -160,16 +211,131 @@ _MOCK_IDEAS: list[_MockIdea] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_source_urls(research_text: str) -> list[str]:
+    """Extract unique URLs from formatted research context text.
+
+    Scans the research text for URLs in parentheses (the format used by
+    ``format_research_context``) and returns deduplicated results.
+    """
+    import re
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\(https?://[^\s)]+\)", research_text):
+        url = match.group(0)[1:-1]  # strip parens
+        if url not in seen:
+            urls.append(url)
+            seen.add(url)
+    return urls
+
+
+def _build_user_prompt(research_text: str, *, has_research: bool) -> str:
+    """Build the user prompt for idea discovery LLM call."""
+    if has_research:
+        return (
+            "Based on the following market research signals, identify ONE specific, "
+            "actionable micro-SaaS product idea. The idea must address a real pain "
+            "point backed by the evidence below. Include specific pain points with "
+            "severity ratings, existing solutions, and how this idea differentiates.\n\n"
+            "---\n\n"
+            f"{research_text}\n\n"
+            "---\n\n"
+            "Respond with a single structured product idea. Reference source URLs "
+            "from the research data in the source_urls field where applicable."
+        )
+    return (
+        "No external research data is available. Using your training knowledge, "
+        "identify ONE specific, actionable micro-SaaS product idea that addresses "
+        "a real, underserved pain point. Focus on problems you have strong evidence "
+        "exist based on common developer and small-business complaints. Include "
+        "specific pain points with severity ratings, existing solutions, and how "
+        "this idea differentiates. Be concrete and specific — avoid generic ideas."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step implementation
+# ---------------------------------------------------------------------------
+
+
 @register_step
 class IdeaDiscoveryStep(AbstractStep):
     name = "idea_discovery"
     step_number = 0
 
-    def run(self, ctx: StepContext) -> BaseModel:
+    def run(self, ctx: StepContext) -> BaseModelType:
         if ctx.dry_run:
             return self._mock_idea(ctx)
-        # Real implementation will use research APIs + LLM
-        return self._mock_idea(ctx)
+        return self._discover_idea(ctx)
+
+    def _discover_idea(self, ctx: StepContext) -> IdeaCandidate:
+        """Run real idea discovery: research APIs + LLM synthesis."""
+        from verdandi.llm import LLMClient
+        from verdandi.research import ResearchCollector, format_research_context
+
+        # --- Collect research signals ---
+        research_text = ""
+        has_research = False
+
+        try:
+            collector = ResearchCollector(ctx.settings)
+            raw_data = collector.collect(
+                _DISCOVERY_QUERIES,
+                include_reddit=True,
+                include_hn_comments=True,
+                perplexity_question=_PERPLEXITY_QUESTION,
+            )
+            research_text = format_research_context(raw_data)
+            has_research = True
+            logger.info(
+                "Research collected for idea discovery",
+                sources=raw_data.sources_used,
+                text_length=len(research_text),
+            )
+        except RuntimeError:
+            logger.warning("All research sources failed, falling back to LLM-only discovery")
+
+        # --- Synthesize via LLM ---
+        user_prompt = _build_user_prompt(research_text, has_research=has_research)
+        llm = LLMClient(ctx.settings)
+        result = llm.generate(user_prompt, _IdeaLLMOutput, system=_SYSTEM_PROMPT)
+
+        logger.info(
+            "Idea discovered via LLM",
+            title=result.title,
+            category=result.category,
+            pain_points_count=len(result.pain_points),
+            has_research=has_research,
+        )
+
+        # Merge LLM-produced source_urls with any URLs extracted from research
+        source_urls = list(result.source_urls)
+        if has_research:
+            extracted = _extract_source_urls(research_text)
+            seen = set(source_urls)
+            for url in extracted:
+                if url not in seen:
+                    source_urls.append(url)
+                    seen.add(url)
+
+        return IdeaCandidate(
+            experiment_id=ctx.experiment.id or 0,
+            worker_id=ctx.worker_id,
+            title=result.title,
+            one_liner=result.one_liner,
+            problem_statement=result.problem_statement,
+            target_audience=result.target_audience,
+            category=result.category,
+            pain_points=result.pain_points,
+            existing_solutions=result.existing_solutions,
+            differentiation=result.differentiation,
+            source_urls=source_urls,
+        )
 
     def _mock_idea(self, ctx: StepContext) -> IdeaCandidate:
         mock = random.choice(_MOCK_IDEAS)

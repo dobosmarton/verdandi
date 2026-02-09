@@ -1,4 +1,4 @@
-"""Client stub for Hacker News Algolia API.
+"""Client for Hacker News Algolia API.
 
 The HN Algolia API is free with no rate limits and requires no API key.
 Invaluable for discovering developer pain points and trending topics.
@@ -8,11 +8,15 @@ Docs: https://hn.algolia.com/api
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TypedDict
 
+import httpx
 import structlog
+from typing_extensions import TypedDict
 
 logger = structlog.get_logger()
+
+_TIMEOUT = httpx.Timeout(30.0)
+_BASE_URL = "https://hn.algolia.com/api/v1"
 
 
 class HNStory(TypedDict):
@@ -36,18 +40,108 @@ class HNComment(TypedDict):
     objectID: str
 
 
+def _parse_story(hit: dict[str, object], tags: str) -> HNStory:
+    """Parse a single HN Algolia hit into an HNStory TypedDict."""
+    # created_at: prefer the ISO string field, fall back to epoch
+    created_at_raw = hit.get("created_at")
+    if isinstance(created_at_raw, str) and created_at_raw:
+        created_at = created_at_raw
+    else:
+        created_at_i = hit.get("created_at_i")
+        if isinstance(created_at_i, int):
+            created_at = datetime.fromtimestamp(created_at_i, tz=UTC).isoformat()
+        else:
+            created_at = datetime.now(UTC).isoformat()
+
+    # url can be null/empty in the API response
+    url_raw = hit.get("url")
+    url: str | None = str(url_raw) if url_raw else None
+
+    # _tags is a list of strings in the API response
+    hit_tags = hit.get("_tags")
+    tags_str = ",".join(str(t) for t in hit_tags) if isinstance(hit_tags, list) else tags
+
+    title_raw = hit.get("title")
+    title = str(title_raw) if title_raw else ""
+
+    author_raw = hit.get("author")
+    author = str(author_raw) if author_raw else ""
+
+    points_raw = hit.get("points")
+    points = int(points_raw) if isinstance(points_raw, (int, float)) else 0
+
+    num_comments_raw = hit.get("num_comments")
+    num_comments = int(num_comments_raw) if isinstance(num_comments_raw, (int, float)) else 0
+
+    object_id_raw = hit.get("objectID")
+    object_id = str(object_id_raw) if object_id_raw else ""
+
+    return HNStory(
+        title=title,
+        url=url,
+        author=author,
+        points=points,
+        num_comments=num_comments,
+        created_at=created_at,
+        objectID=object_id,
+        tags=tags_str,
+    )
+
+
+def _parse_comment(hit: dict[str, object]) -> HNComment:
+    """Parse a single HN Algolia hit into an HNComment TypedDict."""
+    # created_at: prefer the ISO string field, fall back to epoch
+    created_at_raw = hit.get("created_at")
+    if isinstance(created_at_raw, str) and created_at_raw:
+        created_at = created_at_raw
+    else:
+        created_at_i = hit.get("created_at_i")
+        if isinstance(created_at_i, int):
+            created_at = datetime.fromtimestamp(created_at_i, tz=UTC).isoformat()
+        else:
+            created_at = datetime.now(UTC).isoformat()
+
+    comment_text_raw = hit.get("comment_text")
+    comment_text = str(comment_text_raw) if comment_text_raw else ""
+
+    author_raw = hit.get("author")
+    author = str(author_raw) if author_raw else ""
+
+    story_title_raw = hit.get("story_title")
+    story_title = str(story_title_raw) if story_title_raw else ""
+
+    story_url_raw = hit.get("story_url")
+    story_url: str | None = str(story_url_raw) if story_url_raw else None
+
+    points_raw = hit.get("points")
+    points = int(points_raw) if isinstance(points_raw, (int, float)) else 0
+
+    object_id_raw = hit.get("objectID")
+    object_id = str(object_id_raw) if object_id_raw else ""
+
+    return HNComment(
+        comment_text=comment_text,
+        author=author,
+        story_title=story_title,
+        story_url=story_url,
+        points=points,
+        created_at=created_at,
+        objectID=object_id,
+    )
+
+
 class HNClient:
     """Hacker News Algolia API client. Always available (no API key needed)."""
 
     def __init__(self) -> None:
-        self.base_url = "https://hn.algolia.com/api/v1"
+        self.base_url = _BASE_URL
 
     @property
     def is_available(self) -> bool:
         # HN Algolia API is free and requires no authentication.
         return True
 
-    async def search(self, query: str, tags: str = "story") -> list[HNStory]:
+    def search(self, query: str, tags: str = "story") -> list[HNStory]:
         """Search Hacker News stories.
 
         Args:
@@ -56,26 +150,33 @@ class HNClient:
                 "show_hn", "ask_hn", "poll". Combine with commas.
 
         Returns:
-            List of HN item dicts with keys: title, url, author, points,
-            num_comments, created_at, objectID.
+            List of HN story dicts with title, url, author, points,
+            num_comments, created_at, objectID, and tags.
         """
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.get(
-        #         f"{self.base_url}/search",
-        #         params={
-        #             "query": query,
-        #             "tags": tags,
-        #             "hitsPerPage": 20,
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return data.get("hits", [])
-        logger.info("HN search: %r (tags=%s)", query, tags)
-        return self._mock_search(query, tags)
+        logger.info("hn_search", query=query, tags=tags)
+        try:
+            with httpx.Client(timeout=_TIMEOUT) as client:
+                resp = client.get(
+                    f"{self.base_url}/search",
+                    params={
+                        "query": query,
+                        "tags": tags,
+                        "hitsPerPage": 20,
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                hits_raw = data.get("hits")
+                if not isinstance(hits_raw, list):
+                    logger.warning("hn_search_unexpected_response", query=query)
+                    return self._mock_search(query, tags)
+                hits: list[dict[str, object]] = hits_raw
+                return [_parse_story(hit, tags) for hit in hits]
+        except httpx.HTTPError as exc:
+            logger.warning("hn_search_failed", query=query, error=str(exc))
+            return self._mock_search(query, tags)
 
-    async def search_comments(self, query: str) -> list[HNComment]:
+    def search_comments(self, query: str) -> list[HNComment]:
         """Search Hacker News comments for pain points and discussions.
 
         Comments often contain the most valuable insights about what
@@ -85,24 +186,31 @@ class HNClient:
             query: Topic to search for in comments.
 
         Returns:
-            List of comment dicts with keys: comment_text, author,
-            story_title, story_url, points, created_at, objectID.
+            List of comment dicts with comment_text, author,
+            story_title, story_url, points, created_at, and objectID.
         """
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.get(
-        #         f"{self.base_url}/search",
-        #         params={
-        #             "query": query,
-        #             "tags": "comment",
-        #             "hitsPerPage": 20,
-        #         },
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return data.get("hits", [])
-        logger.info("HN comment search: %r", query)
-        return self._mock_search_comments(query)
+        logger.info("hn_comment_search", query=query)
+        try:
+            with httpx.Client(timeout=_TIMEOUT) as client:
+                resp = client.get(
+                    f"{self.base_url}/search",
+                    params={
+                        "query": query,
+                        "tags": "comment",
+                        "hitsPerPage": 20,
+                    },
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                hits_raw = data.get("hits")
+                if not isinstance(hits_raw, list):
+                    logger.warning("hn_comment_search_unexpected_response", query=query)
+                    return self._mock_search_comments(query)
+                hits: list[dict[str, object]] = hits_raw
+                return [_parse_comment(hit) for hit in hits]
+        except httpx.HTTPError as exc:
+            logger.warning("hn_comment_search_failed", query=query, error=str(exc))
+            return self._mock_search_comments(query)
 
     # ------------------------------------------------------------------
     # Mock data

@@ -1,4 +1,4 @@
-"""Client stub for Serper.dev Google SERP API.
+"""Client for Serper.dev Google SERP API.
 
 Serper provides structured Google search results at the best price:
 2,500 free queries (one-time), then $1 per 1,000 queries.
@@ -7,11 +7,13 @@ Key capability: site:reddit.com queries for extracting discussions.
 
 from __future__ import annotations
 
-from typing import TypedDict
-
+import httpx
 import structlog
+from typing_extensions import TypedDict
 
 logger = structlog.get_logger()
+
+_SEARCH_TIMEOUT = 30.0
 
 
 class SerperResult(TypedDict):
@@ -29,8 +31,21 @@ class SerperRedditResult(TypedDict):
     position: int
 
 
+def _extract_subreddit(link: str) -> str:
+    """Extract subreddit name from a Reddit URL.
+
+    Expected format: https://www.reddit.com/r/SUBREDDIT/...
+    """
+    parts = link.split("/")
+    if "r" in parts:
+        idx = parts.index("r")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return ""
+
+
 class SerperClient:
-    """Serper.dev API client. Returns mock data until API key is configured."""
+    """Serper.dev API client. Returns mock data when API key is not configured."""
 
     def __init__(self, api_key: str = "") -> None:
         self.api_key = api_key
@@ -40,7 +55,7 @@ class SerperClient:
     def is_available(self) -> bool:
         return bool(self.api_key)
 
-    async def search(self, query: str, num: int = 10) -> list[SerperResult]:
+    def search(self, query: str, num: int = 10) -> list[SerperResult]:
         """Search Google via Serper and return structured SERP data.
 
         Args:
@@ -54,20 +69,36 @@ class SerperClient:
             logger.debug("Serper not configured, returning mock data")
             return self._mock_search(query, num)
 
-        # TODO: Real API call
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/search",
-        #         headers={"X-API-KEY": self.api_key},
-        #         json={"q": query, "num": num},
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     return data.get("organic", [])
-        logger.info("Serper search: %r (num=%d)", query, num)
-        return self._mock_search(query, num)
+        try:
+            with httpx.Client(timeout=_SEARCH_TIMEOUT) as client:
+                resp = client.post(
+                    f"{self.base_url}/search",
+                    headers={"X-API-KEY": self.api_key},
+                    json={"q": query, "num": num},
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                raw_results = data.get("organic", [])
+                if not isinstance(raw_results, list):
+                    raw_results = []
+                results: list[SerperResult] = []
+                for i, item in enumerate(raw_results):
+                    if not isinstance(item, dict):
+                        continue
+                    result: SerperResult = {
+                        "title": str(item.get("title", "")),
+                        "link": str(item.get("link", "")),
+                        "snippet": str(item.get("snippet", "")),
+                        "position": i + 1,
+                    }
+                    results.append(result)
+                logger.info("serper_search_complete", query=query, result_count=len(results))
+                return results
+        except httpx.HTTPError as exc:
+            logger.warning("serper_search_failed", query=query, error=str(exc))
+            return self._mock_search(query, num)
 
-    async def search_reddit(self, query: str) -> list[SerperRedditResult]:
+    def search_reddit(self, query: str) -> list[SerperRedditResult]:
         """Search Reddit discussions via Google site: queries.
 
         Uses site:reddit.com to find relevant Reddit threads discussing
@@ -78,32 +109,47 @@ class SerperClient:
 
         Returns:
             List of Reddit result dicts with keys: title, link, snippet,
-            subreddit.
+            subreddit, position.
         """
         if not self.is_available:
             logger.debug("Serper not configured, returning mock Reddit data")
             return self._mock_search_reddit(query)
 
-        # TODO: Real API call with site:reddit.com prefix
-        # full_query = f"site:reddit.com {query}"
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(
-        #         f"{self.base_url}/search",
-        #         headers={"X-API-KEY": self.api_key},
-        #         json={"q": full_query, "num": 10},
-        #     )
-        #     resp.raise_for_status()
-        #     data = resp.json()
-        #     results = data.get("organic", [])
-        #     for r in results:
-        #         # Extract subreddit from URL
-        #         parts = r.get("link", "").split("/")
-        #         if "r" in parts:
-        #             idx = parts.index("r")
-        #             r["subreddit"] = parts[idx + 1] if idx + 1 < len(parts) else ""
-        #     return results
-        logger.info("Serper Reddit search: %r", query)
-        return self._mock_search_reddit(query)
+        full_query = f"site:reddit.com {query}"
+        try:
+            with httpx.Client(timeout=_SEARCH_TIMEOUT) as client:
+                resp = client.post(
+                    f"{self.base_url}/search",
+                    headers={"X-API-KEY": self.api_key},
+                    json={"q": full_query, "num": 10},
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                raw_results = data.get("organic", [])
+                if not isinstance(raw_results, list):
+                    raw_results = []
+                results: list[SerperRedditResult] = []
+                for i, item in enumerate(raw_results):
+                    if not isinstance(item, dict):
+                        continue
+                    link = str(item.get("link", ""))
+                    result: SerperRedditResult = {
+                        "title": str(item.get("title", "")),
+                        "link": link,
+                        "snippet": str(item.get("snippet", "")),
+                        "subreddit": _extract_subreddit(link),
+                        "position": i + 1,
+                    }
+                    results.append(result)
+                logger.info(
+                    "serper_reddit_search_complete",
+                    query=query,
+                    result_count=len(results),
+                )
+                return results
+        except httpx.HTTPError as exc:
+            logger.warning("serper_reddit_search_failed", query=query, error=str(exc))
+            return self._mock_search_reddit(query)
 
     # ------------------------------------------------------------------
     # Mock data

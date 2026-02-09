@@ -2,13 +2,35 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import structlog
+from pydantic import BaseModel, ConfigDict
 
 from verdandi.models.research import Competitor, MarketResearch, SearchResult
 from verdandi.steps.base import AbstractStep, StepContext, register_step
 
-if TYPE_CHECKING:
-    from pydantic import BaseModel
+logger = structlog.get_logger()
+
+
+class _MarketResearchLLMOutput(BaseModel):
+    """LLM-generated content fields for market research synthesis.
+
+    Contains only the fields the LLM should produce. Metadata fields
+    (experiment_id, worker_id, step_name, timestamps) are added by the
+    step after generation.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tam_estimate: str
+    market_growth: str
+    demand_signals: list[str]
+    competitors: list[Competitor]
+    competitor_gaps: list[str]
+    target_audience_size: str
+    willingness_to_pay: str
+    common_complaints: list[str]
+    key_findings: list[str]
+    research_summary: str
 
 
 @register_step
@@ -19,8 +41,153 @@ class DeepResearchStep(AbstractStep):
     def run(self, ctx: StepContext) -> BaseModel:
         if ctx.dry_run:
             return self._mock_research(ctx)
-        # Real implementation will use Tavily, Serper, Exa, Perplexity
-        return self._mock_research(ctx)
+
+        from verdandi.llm import LLMClient
+        from verdandi.models.idea import IdeaCandidate
+        from verdandi.research import ResearchCollector, format_research_context
+
+        experiment_id = ctx.experiment.id
+        if experiment_id is None:
+            raise RuntimeError("Experiment has no ID — cannot run deep research")
+
+        # Retrieve Step 0's IdeaCandidate from the database
+        step_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
+        if step_result is None:
+            raise RuntimeError(
+                f"No idea_discovery result found for experiment {ctx.experiment.id}. "
+                "Step 0 must complete before Step 1 can run."
+            )
+
+        idea_data = step_result["data"]
+        idea = IdeaCandidate.model_validate(idea_data)
+
+        logger.info(
+            "Starting deep research",
+            experiment_id=ctx.experiment.id,
+            idea_title=idea.title,
+            category=idea.category,
+        )
+
+        # Build targeted queries from the idea
+        queries = [
+            f"{idea.title} competitors alternatives",
+            f"{idea.category} market size TAM",
+            f'"{idea.target_audience}" pain points {idea.category}',
+        ]
+
+        # Collect raw research data from all available APIs
+        collector = ResearchCollector(ctx.settings)
+        raw_data = collector.collect(
+            queries,
+            include_reddit=True,
+            include_hn_comments=True,
+            perplexity_question=(
+                f"What is the total addressable market for {idea.title}? "
+                "Who are the main competitors and what gaps exist?"
+            ),
+            exa_similar_url="",
+        )
+
+        # Format raw data into a text block for LLM consumption
+        research_text = format_research_context(raw_data)
+
+        # Build prompts for LLM synthesis
+        system_prompt = (
+            "You are a market research analyst. Analyze the provided research "
+            "data and produce a comprehensive market assessment. Be "
+            "evidence-based — cite specific data points from the research. "
+            "Do not invent statistics or data."
+        )
+
+        user_prompt = (
+            f"## Product Idea\n\n"
+            f"**Title**: {idea.title}\n"
+            f"**Problem**: {idea.problem_statement}\n"
+            f"**Target Audience**: {idea.target_audience}\n"
+            f"**Category**: {idea.category}\n\n"
+            f"## Research Data\n\n"
+            f"{research_text}\n\n"
+            f"## Instructions\n\n"
+            f"Based on the research data above, produce a comprehensive market "
+            f"assessment. For each field, ground your analysis in specific "
+            f"evidence from the research data. Include concrete numbers, "
+            f"quotes, and references where available."
+        )
+
+        # Generate structured LLM output
+        llm = LLMClient(ctx.settings)
+        result = llm.generate(
+            user_prompt,
+            _MarketResearchLLMOutput,
+            system=system_prompt,
+        )
+
+        logger.info(
+            "LLM synthesis complete",
+            experiment_id=ctx.experiment.id,
+            competitor_count=len(result.competitors),
+            finding_count=len(result.key_findings),
+        )
+
+        # Build search_results from raw API data (NOT LLM-generated)
+        search_results: list[SearchResult] = [
+            SearchResult(
+                title=tr["title"],
+                url=tr["url"],
+                snippet=tr["content"][:300],
+                source="tavily",
+                relevance_score=float(tr.get("score", 0.0)),
+            )
+            for tr in raw_data.tavily_results
+        ]
+
+        search_results.extend(
+            SearchResult(
+                title=sr["title"],
+                url=sr["link"],
+                snippet=sr["snippet"],
+                source="serper",
+                relevance_score=0.0,
+            )
+            for sr in raw_data.serper_results
+        )
+
+        search_results.extend(
+            SearchResult(
+                title=er["title"],
+                url=er["url"],
+                snippet=er["text"][:300] if er["text"] else "",
+                source="exa",
+                relevance_score=er["score"],
+            )
+            for er in raw_data.exa_results
+        )
+
+        logger.info(
+            "Search results compiled",
+            experiment_id=ctx.experiment.id,
+            total_search_results=len(search_results),
+            tavily_count=len(raw_data.tavily_results),
+            serper_count=len(raw_data.serper_results),
+            exa_count=len(raw_data.exa_results),
+        )
+
+        # Construct full MarketResearch from LLM output + search_results + metadata
+        return MarketResearch(
+            experiment_id=ctx.experiment.id or 0,
+            worker_id=ctx.worker_id,
+            tam_estimate=result.tam_estimate,
+            market_growth=result.market_growth,
+            demand_signals=result.demand_signals,
+            competitors=result.competitors,
+            competitor_gaps=result.competitor_gaps,
+            target_audience_size=result.target_audience_size,
+            willingness_to_pay=result.willingness_to_pay,
+            common_complaints=result.common_complaints,
+            search_results=search_results,
+            key_findings=result.key_findings,
+            research_summary=result.research_summary,
+        )
 
     def _mock_research(self, ctx: StepContext) -> MarketResearch:
         return MarketResearch(

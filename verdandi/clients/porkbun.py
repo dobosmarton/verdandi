@@ -8,9 +8,8 @@ API docs: https://porkbun.com/api/json/v3/documentation
 
 from __future__ import annotations
 
-from typing import TypedDict
-
 import structlog
+from typing_extensions import TypedDict
 
 logger = structlog.get_logger()
 

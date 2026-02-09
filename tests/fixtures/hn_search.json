@@ -1,0 +1,28 @@
+{
+  "hits": [
+    {
+      "title": "Show HN: I built an AI changelog generator",
+      "url": "https://github.com/example/ai-changelog",
+      "author": "devfounder",
+      "points": 234,
+      "num_comments": 89,
+      "created_at": "2025-01-10T14:30:00.000Z",
+      "objectID": "38500001",
+      "_tags": ["story", "show_hn"]
+    },
+    {
+      "title": "Ask HN: What developer tools are missing?",
+      "url": null,
+      "author": "curious_hacker",
+      "points": 178,
+      "num_comments": 312,
+      "created_at": "2025-01-05T09:15:00.000Z",
+      "objectID": "38500002",
+      "_tags": ["story", "ask_hn"]
+    }
+  ],
+  "nbHits": 2,
+  "page": 0,
+  "nbPages": 1,
+  "hitsPerPage": 20
+}

@@ -3,13 +3,42 @@
 from __future__ import annotations
 
 from importlib.resources import files
-from typing import TYPE_CHECKING
 
-from verdandi.models.landing_page import FAQItem, LandingPageContent, Testimonial
+import structlog
+from pydantic import BaseModel, ConfigDict
+
+from verdandi.models.landing_page import (
+    FAQItem,
+    FeatureItem,
+    LandingPageContent,
+    StatItem,
+    Testimonial,
+)
 from verdandi.steps.base import AbstractStep, StepContext, register_step
 
-if TYPE_CHECKING:
-    from pydantic import BaseModel
+logger = structlog.get_logger()
+
+
+class _LandingPageLLMOutput(BaseModel):
+    """LLM-generated landing page content fields (no metadata)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    headline: str
+    subheadline: str
+    hero_cta_text: str
+    hero_cta_subtext: str
+    features_title: str
+    features: list[FeatureItem]
+    testimonials: list[Testimonial]
+    stats: list[StatItem]
+    faq_items: list[FAQItem]
+    footer_cta_headline: str
+    footer_cta_text: str
+    page_title: str
+    meta_description: str
+    og_title: str
+    og_description: str
 
 
 @register_step
@@ -18,9 +47,105 @@ class LandingPageStep(AbstractStep):
     step_number = 4
 
     def run(self, ctx: StepContext) -> BaseModel:
-        content = self._mock_content(ctx)
-        # Render HTML from template (frozen model — use model_copy)
+        if ctx.dry_run:
+            content = self._mock_content(ctx)
+            rendered = self._render_template(content)
+            return content.model_copy(update={"rendered_html": rendered})
+
+        from verdandi.llm import LLMClient
+        from verdandi.models.mvp import MVPDefinition
+
+        experiment_id = ctx.experiment.id
+        if experiment_id is None:
+            raise RuntimeError("Experiment has no ID — cannot generate landing page")
+
+        # Retrieve Step 3 result
+        mvp_result = ctx.db.get_step_result(experiment_id, "mvp_definition")
+        if mvp_result is None:
+            msg = (
+                f"Cannot generate landing page: Step 3 (mvp_definition) "
+                f"not found for experiment {ctx.experiment.id}"
+            )
+            raise RuntimeError(msg)
+
+        mvp_data = mvp_result["data"]
+        if not isinstance(mvp_data, dict):
+            msg = f"Invalid MVP definition data for experiment {ctx.experiment.id}"
+            raise RuntimeError(msg)
+
+        mvp = MVPDefinition.model_validate(mvp_data)
+
+        # Build the features list for the prompt
+        features_text = "\n".join(f"- {f.title}: {f.description}" for f in mvp.features)
+
+        system_prompt = (
+            "You are a conversion copywriter creating landing page content "
+            "for a product validation test. Write specific, concrete copy — "
+            "no generic phrases. The testimonials should be realistic "
+            "(fabricated for validation purposes). Create 3-4 features, "
+            "2-3 testimonials, 3 stats, and 3-4 FAQ items. The copy should "
+            "directly address the target audience's pain points."
+        )
+
+        user_prompt = (
+            f"Create landing page content for the following product:\n\n"
+            f"Product Name: {mvp.product_name}\n"
+            f"Tagline: {mvp.tagline}\n"
+            f"Value Proposition: {mvp.value_proposition}\n"
+            f"Target Persona: {mvp.target_persona}\n"
+            f"Features:\n{features_text}\n"
+            f"Pricing Model: {mvp.pricing_model}\n"
+            f"CTA Text: {mvp.cta_text}\n\n"
+            f"Generate compelling, specific landing page copy that speaks "
+            f"directly to the target persona's pain points. Avoid generic "
+            f"marketing language. Each feature icon should be a single "
+            f"lowercase word (e.g. 'zap', 'shield', 'clock', 'chart')."
+        )
+
+        logger.info(
+            "Generating landing page content via LLM",
+            experiment_id=ctx.experiment.id,
+            product_name=mvp.product_name,
+        )
+
+        llm = LLMClient(ctx.settings)
+        result = llm.generate(
+            user_prompt,
+            _LandingPageLLMOutput,
+            system=system_prompt,
+        )
+
+        content = LandingPageContent(
+            experiment_id=ctx.experiment.id or 0,
+            worker_id=ctx.worker_id,
+            headline=result.headline,
+            subheadline=result.subheadline,
+            hero_cta_text=result.hero_cta_text,
+            hero_cta_subtext=result.hero_cta_subtext,
+            features_title=result.features_title,
+            features=result.features,
+            testimonials=result.testimonials,
+            stats=result.stats,
+            faq_items=result.faq_items,
+            footer_cta_headline=result.footer_cta_headline,
+            footer_cta_text=result.footer_cta_text,
+            page_title=result.page_title,
+            meta_description=result.meta_description,
+            og_title=result.og_title,
+            og_description=result.og_description,
+        )
+
         rendered = self._render_template(content)
+
+        logger.info(
+            "Landing page content generated",
+            experiment_id=ctx.experiment.id,
+            headline=content.headline,
+            num_features=len(content.features),
+            num_testimonials=len(content.testimonials),
+            rendered_length=len(rendered),
+        )
+
         return content.model_copy(update={"rendered_html": rendered})
 
     def _render_template(self, content: LandingPageContent) -> str:

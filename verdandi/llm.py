@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 from pydantic import BaseModel
+from pydantic_ai.settings import ModelSettings
 
 from verdandi.config import Settings
 
@@ -37,6 +38,16 @@ class LLMClient:
             )
         return self._model
 
+    def _build_model_settings(
+        self,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ModelSettings:
+        """Build model_settings for PydanticAI run_sync()."""
+        temp = temperature if temperature is not None else self.settings.llm_temperature
+        tokens = max_tokens if max_tokens is not None else self.settings.llm_max_tokens
+        return ModelSettings(temperature=temp, max_tokens=tokens)
+
     def generate(
         self,
         prompt: str,
@@ -54,13 +65,27 @@ class LLMClient:
             system_prompt=system or "You are a helpful assistant.",
         )
 
+        model_settings = self._build_model_settings(temperature, max_tokens)
+
         logger.debug(
             "LLM request",
             model=self.settings.llm_model,
             response_model=response_model.__name__,
         )
 
-        result = agent.run_sync(prompt)
+        result = agent.run_sync(prompt, model_settings=model_settings)
+
+        # Log usage for cost tracking
+        usage = result.usage()
+        logger.info(
+            "LLM response",
+            model=self.settings.llm_model,
+            output_type=response_model.__name__,
+            request_tokens=usage.request_tokens,
+            response_tokens=usage.response_tokens,
+            total_tokens=usage.total_tokens,
+        )
+
         return result.output
 
     def generate_text(
@@ -79,7 +104,20 @@ class LLMClient:
             system_prompt=system or "You are a helpful assistant.",
         )
 
-        result = agent.run_sync(prompt)
+        model_settings = self._build_model_settings(temperature, max_tokens)
+
+        result = agent.run_sync(prompt, model_settings=model_settings)
+
+        usage = result.usage()
+        logger.info(
+            "LLM response",
+            model=self.settings.llm_model,
+            output_type="str",
+            request_tokens=usage.request_tokens,
+            response_tokens=usage.response_tokens,
+            total_tokens=usage.total_tokens,
+        )
+
         return result.output
 
     @property

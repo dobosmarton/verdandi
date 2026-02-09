@@ -1,0 +1,26 @@
+{
+  "query": "trending micro-SaaS ideas",
+  "results": [
+    {
+      "title": "50 Micro-SaaS Ideas for 2025",
+      "url": "https://example.com/micro-saas-ideas",
+      "content": "The most promising micro-SaaS opportunities include AI-powered form validation, automated changelog generation, and developer status pages.",
+      "score": 0.95,
+      "published_date": "2025-01-15T00:00:00Z"
+    },
+    {
+      "title": "Underserved Markets for Solo Developers",
+      "url": "https://example.com/underserved-markets",
+      "content": "Solo developers are finding success in niche B2B tools. The key is solving a specific pain point that larger companies ignore.",
+      "score": 0.88,
+      "published_date": "2025-02-01T00:00:00Z"
+    },
+    {
+      "title": "SaaS Pricing Trends 2025",
+      "url": "https://example.com/pricing-trends",
+      "content": "The freemium model continues to dominate developer tools, with conversion rates averaging 3-5% from free to paid tiers.",
+      "score": 0.82,
+      "published_date": "2025-01-20T00:00:00Z"
+    }
+  ]
+}
