@@ -7,6 +7,7 @@ a collect-then-synthesize pattern with graceful degradation.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import structlog
@@ -19,6 +20,7 @@ from verdandi.clients.serper import SerperRedditResult, SerperResult
 from verdandi.clients.tavily import TavilySearchResult
 
 if TYPE_CHECKING:
+    from verdandi.cache import ResearchCache
     from verdandi.config import Settings
 
 logger = structlog.get_logger()
@@ -59,10 +61,48 @@ class ResearchCollector:
     Each API call is wrapped in try/except. Failures are logged and
     collected in the errors list, but never abort the collection.
     Only raises if ALL sources fail to return any data.
+
+    Optionally caches results in Redis when configured via settings.
+    Cache degrades gracefully if Redis is unavailable.
     """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._cache: ResearchCache | None = None
+        if settings.research_cache_enabled and settings.redis_url:
+            try:
+                from verdandi.cache import ResearchCache
+
+                cache = ResearchCache(settings)
+                if cache.ping():
+                    self._cache = cache
+                    logger.info("Research cache enabled via Redis")
+                else:
+                    logger.warning("Redis not reachable, caching disabled")
+            except Exception as exc:
+                logger.warning(
+                    "Redis cache init failed, proceeding without cache",
+                    error=str(exc),
+                )
+
+    def _check_cache(self, source: str, query: str) -> str | None:
+        """Check cache. Returns raw JSON string or None."""
+        if self._cache is None:
+            return None
+        try:
+            return self._cache.get(source, query)
+        except Exception:
+            logger.debug("cache_read_failed", source=source)
+            return None
+
+    def _save_cache(self, source: str, query: str, data_json: str) -> None:
+        """Save to cache. Fails silently."""
+        if self._cache is None:
+            return
+        try:
+            self._cache.set(source, query, data_json)
+        except Exception:
+            logger.debug("cache_write_failed", source=source)
 
     def collect(
         self,
@@ -110,9 +150,15 @@ class ResearchCollector:
         tavily = TavilyClient(api_key=self.settings.tavily_api_key)
         if tavily.is_available:
             for q in queries[:3]:  # Tavily credits are limited, use top 3 queries
+                cached_json = self._check_cache("tavily", q)
+                if cached_json is not None:
+                    cached_tavily: list[TavilySearchResult] = json.loads(cached_json)
+                    tavily_results.extend(cached_tavily)
+                    continue
                 try:
                     tavily_hits = tavily.search(q, max_results=5)
                     tavily_results.extend(tavily_hits)
+                    self._save_cache("tavily", q, json.dumps(tavily_hits))
                 except Exception as exc:
                     errors.append(f"Tavily search failed for '{q}': {exc}")
                     logger.warning("Tavily search failed", query=q, error=str(exc))
@@ -125,20 +171,32 @@ class ResearchCollector:
         serper = SerperClient(api_key=self.settings.serper_api_key)
         if serper.is_available:
             for q in queries[:2]:  # Serper is cheap but be conservative
+                cached_json = self._check_cache("serper", q)
+                if cached_json is not None:
+                    cached_serper: list[SerperResult] = json.loads(cached_json)
+                    serper_results.extend(cached_serper)
+                    continue
                 try:
                     serper_hits = serper.search(q, num=10)
                     serper_results.extend(serper_hits)
+                    self._save_cache("serper", q, json.dumps(serper_hits))
                 except Exception as exc:
                     errors.append(f"Serper search failed for '{q}': {exc}")
                     logger.warning("Serper search failed", query=q, error=str(exc))
 
             if include_reddit and primary_query:
-                try:
-                    reddit_hits = serper.search_reddit(primary_query)
-                    serper_reddit.extend(reddit_hits)
-                except Exception as exc:
-                    errors.append(f"Serper Reddit search failed: {exc}")
-                    logger.warning("Serper Reddit failed", error=str(exc))
+                cached_json = self._check_cache("serper_reddit", primary_query)
+                if cached_json is not None:
+                    cached_reddit: list[SerperRedditResult] = json.loads(cached_json)
+                    serper_reddit.extend(cached_reddit)
+                else:
+                    try:
+                        reddit_hits = serper.search_reddit(primary_query)
+                        serper_reddit.extend(reddit_hits)
+                        self._save_cache("serper_reddit", primary_query, json.dumps(reddit_hits))
+                    except Exception as exc:
+                        errors.append(f"Serper Reddit search failed: {exc}")
+                        logger.warning("Serper Reddit failed", error=str(exc))
 
             if serper_results or serper_reddit:
                 sources_used.append("serper")
@@ -149,30 +207,43 @@ class ResearchCollector:
         exa = ExaClient(api_key=self.settings.exa_api_key)
         if exa.is_available:
             if primary_query:
-                try:
-                    exa_hits = exa.search(primary_query, num_results=5)
-                    exa_results.extend(exa_hits)
-                except Exception as exc:
-                    errors.append(f"Exa search failed: {exc}")
-                    logger.warning("Exa search failed", error=str(exc))
+                cached_json = self._check_cache("exa", primary_query)
+                if cached_json is not None:
+                    cached_exa: list[ExaSearchResult] = json.loads(cached_json)
+                    exa_results.extend(cached_exa)
+                else:
+                    try:
+                        exa_hits = exa.search(primary_query, num_results=5)
+                        exa_results.extend(exa_hits)
+                        self._save_cache("exa", primary_query, json.dumps(exa_hits))
+                    except Exception as exc:
+                        errors.append(f"Exa search failed: {exc}")
+                        logger.warning("Exa search failed", error=str(exc))
 
             if exa_similar_url:
-                try:
-                    similar = exa.find_similar(exa_similar_url)
-                    exa_results.extend(
-                        {
-                            "title": s["title"],
-                            "url": s["url"],
-                            "text": s["text"],
-                            "score": s["score"],
-                            "published_date": "",
-                            "author": None,
-                        }
-                        for s in similar
-                    )
-                except Exception as exc:
-                    errors.append(f"Exa find_similar failed: {exc}")
-                    logger.warning("Exa find_similar failed", error=str(exc))
+                cached_json = self._check_cache("exa_similar", exa_similar_url)
+                if cached_json is not None:
+                    cached_exa_similar: list[ExaSearchResult] = json.loads(cached_json)
+                    exa_results.extend(cached_exa_similar)
+                else:
+                    try:
+                        similar = exa.find_similar(exa_similar_url)
+                        converted: list[ExaSearchResult] = [
+                            {
+                                "title": s["title"],
+                                "url": s["url"],
+                                "text": s["text"],
+                                "score": s["score"],
+                                "published_date": "",
+                                "author": None,
+                            }
+                            for s in similar
+                        ]
+                        exa_results.extend(converted)
+                        self._save_cache("exa_similar", exa_similar_url, json.dumps(converted))
+                    except Exception as exc:
+                        errors.append(f"Exa find_similar failed: {exc}")
+                        logger.warning("Exa find_similar failed", error=str(exc))
 
             if exa_results:
                 sources_used.append("exa")
@@ -182,12 +253,21 @@ class ResearchCollector:
         # --- Perplexity: synthesized answer with citations ---
         perplexity = PerplexityClient(api_key=self.settings.perplexity_api_key)
         if perplexity.is_available and perplexity_question:
-            try:
-                perplexity_answer = perplexity.query(perplexity_question)
+            cached_json = self._check_cache("perplexity", perplexity_question)
+            if cached_json is not None:
+                cached_pplx: PerplexityResult = json.loads(cached_json)
+                perplexity_answer = cached_pplx
                 sources_used.append("perplexity")
-            except Exception as exc:
-                errors.append(f"Perplexity query failed: {exc}")
-                logger.warning("Perplexity query failed", error=str(exc))
+            else:
+                try:
+                    perplexity_answer = perplexity.query(perplexity_question)
+                    sources_used.append("perplexity")
+                    self._save_cache(
+                        "perplexity", perplexity_question, json.dumps(perplexity_answer)
+                    )
+                except Exception as exc:
+                    errors.append(f"Perplexity query failed: {exc}")
+                    logger.warning("Perplexity query failed", error=str(exc))
         elif not perplexity_question:
             logger.debug("No Perplexity question provided, skipping")
         else:
@@ -196,20 +276,32 @@ class ResearchCollector:
         # --- HN Algolia: always available (free, no auth) ---
         hn = HNClient()
         if primary_query:
-            try:
-                hn_hits = hn.search(primary_query, tags="story")
-                hn_stories.extend(hn_hits)
-            except Exception as exc:
-                errors.append(f"HN story search failed: {exc}")
-                logger.warning("HN story search failed", error=str(exc))
+            cached_json = self._check_cache("hn_stories", primary_query)
+            if cached_json is not None:
+                cached_hn: list[HNStory] = json.loads(cached_json)
+                hn_stories.extend(cached_hn)
+            else:
+                try:
+                    hn_hits = hn.search(primary_query, tags="story")
+                    hn_stories.extend(hn_hits)
+                    self._save_cache("hn_stories", primary_query, json.dumps(hn_hits))
+                except Exception as exc:
+                    errors.append(f"HN story search failed: {exc}")
+                    logger.warning("HN story search failed", error=str(exc))
 
             if include_hn_comments:
-                try:
-                    hn_comment_hits = hn.search_comments(primary_query)
-                    hn_comments.extend(hn_comment_hits)
-                except Exception as exc:
-                    errors.append(f"HN comment search failed: {exc}")
-                    logger.warning("HN comment search failed", error=str(exc))
+                cached_json = self._check_cache("hn_comments", primary_query)
+                if cached_json is not None:
+                    cached_hn_c: list[HNComment] = json.loads(cached_json)
+                    hn_comments.extend(cached_hn_c)
+                else:
+                    try:
+                        hn_comment_hits = hn.search_comments(primary_query)
+                        hn_comments.extend(hn_comment_hits)
+                        self._save_cache("hn_comments", primary_query, json.dumps(hn_comment_hits))
+                    except Exception as exc:
+                        errors.append(f"HN comment search failed: {exc}")
+                        logger.warning("HN comment search failed", error=str(exc))
 
             if hn_stories or hn_comments:
                 sources_used.append("hn_algolia")

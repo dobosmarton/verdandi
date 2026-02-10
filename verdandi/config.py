@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     huey_workers: int = 4
     huey_immediate: bool = False
 
+    # Redis cache
+    redis_url: str = ""  # Empty = cache disabled. e.g. "redis://localhost:6379/0"
+    research_cache_ttl_hours: int = 24
+    research_cache_enabled: bool = True
+
     # Worker identity
     worker_id: str = Field(default_factory=_default_worker_id)
 

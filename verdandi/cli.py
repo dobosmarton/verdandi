@@ -227,6 +227,75 @@ def check(ctx: click.Context) -> None:
         click.echo(f"  {name:16s} {status}")
 
 
+@cli.group()
+def cache() -> None:
+    """Manage the research data cache (Redis)."""
+
+
+@cache.command("ping")
+@click.pass_context
+def cache_ping(ctx: click.Context) -> None:
+    """Check Redis connectivity."""
+    from verdandi.cache import ResearchCache
+
+    settings = ctx.obj["settings"]
+    if not settings.redis_url:
+        click.echo("Redis not configured (REDIS_URL is empty).")
+        return
+
+    rc = ResearchCache(settings)
+    if rc.ping():
+        click.echo("Redis: OK")
+    else:
+        click.echo("Redis: unreachable", err=True)
+        sys.exit(1)
+
+
+@cache.command("stats")
+@click.pass_context
+def cache_stats(ctx: click.Context) -> None:
+    """Show research cache statistics."""
+    from verdandi.cache import ResearchCache
+
+    settings = ctx.obj["settings"]
+    if not settings.redis_url:
+        click.echo("Redis not configured (REDIS_URL is empty).")
+        return
+
+    rc = ResearchCache(settings)
+    if not rc.ping():
+        click.echo("Redis: unreachable", err=True)
+        sys.exit(1)
+
+    stats = rc.stats()
+    click.echo(f"  Total cached entries: {stats['total']}")
+    if stats["by_source"]:
+        for source in sorted(stats["by_source"]):
+            click.echo(f"    {source}: {stats['by_source'][source]}")
+    else:
+        click.echo("  (no cached entries)")
+
+
+@cache.command("purge")
+@click.pass_context
+def cache_purge(ctx: click.Context) -> None:
+    """Delete all research cache entries."""
+    from verdandi.cache import ResearchCache
+
+    settings = ctx.obj["settings"]
+    if not settings.redis_url:
+        click.echo("Redis not configured (REDIS_URL is empty).")
+        return
+
+    rc = ResearchCache(settings)
+    if not rc.ping():
+        click.echo("Redis: unreachable", err=True)
+        sys.exit(1)
+
+    count = rc.purge_all()
+    click.echo(f"Purged {count} cache entries.")
+
+
 @cli.command()
 @click.option("--workers", default=4, type=int, help="Number of worker processes")
 @click.pass_context

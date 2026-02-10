@@ -20,6 +20,7 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "structlog>=24.4.0",
     "sqlalchemy>=2.0.0",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,7 @@ dev = [
     "respx>=0.22.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    "fakeredis>=2.26.0",
 ]
 
 [project.scripts]
@@ -97,6 +99,7 @@ disallow_untyped_defs = false
 module = [
     "huey.*",
     "pydantic_ai.*",
+    "fakeredis.*",
 ]
 ignore_missing_imports = true
 
