@@ -38,8 +38,14 @@ class PipelineRunner:
             self._circuit_breakers[step_name] = CircuitBreaker(name=step_name)
         return self._circuit_breakers[step_name]
 
-    def run_experiment(self, experiment_id: int) -> None:
-        """Run all remaining steps for an experiment, respecting checkpoints."""
+    def run_experiment(self, experiment_id: int, *, stop_after: int | None = None) -> None:
+        """Run remaining steps for an experiment, respecting checkpoints.
+
+        Args:
+            experiment_id: The experiment to run.
+            stop_after: If set, stop after this step number completes
+                (e.g., stop_after=2 halts after scoring for research-only runs).
+        """
         correlation_id = uuid.uuid4().hex[:12]
         structlog.contextvars.bind_contextvars(
             correlation_id=correlation_id,
@@ -191,6 +197,22 @@ class PipelineRunner:
                 logger.info("Experiment paused for human review")
                 return
 
+            # Gate: stop_after — intentional early stop for research-only runs
+            if stop_after is not None and step_num >= stop_after:
+                logger.info(
+                    "Pipeline stopped per stop_after",
+                    step=step.name,
+                    step_num=step_num,
+                    stop_after=stop_after,
+                )
+                self.db.log_event(
+                    "pipeline_stopped",
+                    f"Stopped after step {step_num} ({step.name}) per stop_after={stop_after}",
+                    experiment_id=experiment_id,
+                    worker_id=self.settings.worker_id,
+                )
+                return
+
         # All steps completed
         self.db.update_experiment_status(experiment_id, ExperimentStatus.COMPLETED)
         self.db.log_event(
@@ -300,7 +322,7 @@ class PipelineRunner:
         logger.info("Discovery batch complete", count=len(experiment_ids))
         return experiment_ids
 
-    def run_all_pending(self) -> None:
+    def run_all_pending(self, *, stop_after: int | None = None) -> None:
         """Run pipeline for all pending/approved experiments."""
         experiments = self.db.list_experiments(ExperimentStatus.PENDING)
         experiments += self.db.list_experiments(ExperimentStatus.APPROVED)
@@ -309,6 +331,6 @@ class PipelineRunner:
             if exp.id is None:
                 continue
             try:
-                self.run_experiment(exp.id)
+                self.run_experiment(exp.id, stop_after=stop_after)
             except Exception as exc:
                 logger.error("Experiment failed", experiment_id=exp.id, error=str(exc))

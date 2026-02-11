@@ -47,8 +47,15 @@ def discover_ideas_task(max_ideas: int = 3, dry_run: bool = False) -> list[int]:
 
 
 @huey.task()  # type: ignore[untyped-decorator]
-def run_pipeline_task(experiment_id: int, dry_run: bool = False) -> str:
-    """Run the full pipeline for a single experiment.
+def run_pipeline_task(
+    experiment_id: int, dry_run: bool = False, stop_after: int | None = None
+) -> str:
+    """Run the pipeline for a single experiment.
+
+    Args:
+        experiment_id: The experiment to run.
+        dry_run: Use mock data instead of real APIs.
+        stop_after: If set, stop after this step number (e.g., 2 for scoring).
 
     Returns the final experiment status.
     """
@@ -62,7 +69,7 @@ def run_pipeline_task(experiment_id: int, dry_run: bool = False) -> str:
 
     try:
         runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
-        runner.run_experiment(experiment_id)
+        runner.run_experiment(experiment_id, stop_after=stop_after)
         exp = db.get_experiment(experiment_id)
         return exp.status.value if exp else "unknown"
     finally:

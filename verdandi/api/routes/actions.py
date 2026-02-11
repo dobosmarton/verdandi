@@ -44,6 +44,7 @@ def trigger_run(
     result = run_pipeline_task(
         experiment_id=experiment_id,
         dry_run=request.dry_run,
+        stop_after=request.stop_after,
     )
     task_id = result.id if hasattr(result, "id") else None
     return ActionResponse(

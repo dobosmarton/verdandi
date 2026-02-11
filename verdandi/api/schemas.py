@@ -110,3 +110,4 @@ class RunPipelineRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     dry_run: bool = False
+    stop_after: int | None = None

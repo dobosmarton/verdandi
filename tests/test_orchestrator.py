@@ -90,6 +90,43 @@ class TestPipelineRunner:
             if exp.idea_title != "discovery_batch":
                 assert exp.status == ExperimentStatus.COMPLETED
 
+    def test_stop_after_halts_at_scoring(self, runner: PipelineRunner) -> None:
+        """stop_after=2 halts after scoring — Step 3+ not executed."""
+        ids = runner.run_discovery_batch(max_ideas=1)
+        exp_id = ids[0]
+
+        runner.run_experiment(exp_id, stop_after=2)
+
+        exp = runner.db.get_experiment(exp_id)
+        assert exp is not None
+        assert exp.current_step == 2
+        assert exp.status != ExperimentStatus.COMPLETED
+
+        results = runner.db.get_all_step_results(exp_id)
+        step_numbers = {r["step_number"] for r in results}
+        assert 2 in step_numbers  # scoring ran
+        assert 3 not in step_numbers  # mvp_definition did NOT run
+
+    def test_stop_after_none_runs_full_pipeline(self, runner: PipelineRunner) -> None:
+        """stop_after=None preserves existing full-run behavior."""
+        ids = runner.run_discovery_batch(max_ideas=1)
+        exp_id = ids[0]
+
+        runner.run_experiment(exp_id, stop_after=None)
+
+        exp = runner.db.get_experiment(exp_id)
+        assert exp is not None
+        assert exp.status == ExperimentStatus.COMPLETED
+
+    def test_run_all_pending_with_stop_after(self, runner: PipelineRunner) -> None:
+        """stop_after propagates through run_all_pending."""
+        runner.run_discovery_batch(max_ideas=2)
+        runner.run_all_pending(stop_after=2)
+
+        for exp in runner.db.list_experiments():
+            if exp.idea_title != "discovery_batch":
+                assert exp.current_step == 2
+
     def test_pipeline_resumes_from_checkpoint(self, runner: PipelineRunner, db: Database):
         ids = runner.run_discovery_batch(max_ideas=1)
         exp_id = ids[0]

@@ -53,9 +53,22 @@ def discover(ctx: click.Context, max_ideas: int, dry_run: bool) -> None:
 @cli.command()
 @click.argument("experiment_id", type=int, required=False)
 @click.option("--all", "run_all", is_flag=True, help="Run all pending experiments")
+@click.option(
+    "--stop-after",
+    "stop_after",
+    type=int,
+    default=None,
+    help="Stop after step N (e.g., 2 for scoring)",
+)
 @click.option("--dry-run", is_flag=True, help="Use mock data")
 @click.pass_context
-def run(ctx: click.Context, experiment_id: int | None, run_all: bool, dry_run: bool) -> None:
+def run(
+    ctx: click.Context,
+    experiment_id: int | None,
+    run_all: bool,
+    stop_after: int | None,
+    dry_run: bool,
+) -> None:
     """Run the pipeline for an experiment."""
     from verdandi.orchestrator import PipelineRunner
 
@@ -64,12 +77,48 @@ def run(ctx: click.Context, experiment_id: int | None, run_all: bool, dry_run: b
     try:
         runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
         if run_all:
-            runner.run_all_pending()
+            runner.run_all_pending(stop_after=stop_after)
         elif experiment_id is not None:
-            runner.run_experiment(experiment_id)
+            runner.run_experiment(experiment_id, stop_after=stop_after)
         else:
             click.echo("Error: provide an experiment ID or use --all", err=True)
             sys.exit(1)
+    finally:
+        db.close()
+
+
+@cli.command()
+@click.option("--max-ideas", default=3, type=int, help="Number of ideas to discover and research")
+@click.option("--dry-run", is_flag=True, help="Use mock data")
+@click.pass_context
+def research(ctx: click.Context, max_ideas: int, dry_run: bool) -> None:
+    """Discover ideas, research them, and score GO/NO_GO (stops at Step 2)."""
+    from verdandi.orchestrator import PipelineRunner
+
+    settings = ctx.obj["settings"]
+    db = _get_db(settings)
+    try:
+        runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
+
+        click.echo(f"Discovering {max_ideas} ideas...")
+        ids = runner.run_discovery_batch(max_ideas=max_ideas)
+        click.echo(f"Created {len(ids)} experiments. Running research + scoring...")
+
+        for exp_id in ids:
+            runner.run_experiment(exp_id, stop_after=2)
+
+        click.echo("\n--- Research Results ---")
+        for exp_id in ids:
+            exp = db.get_experiment(exp_id)
+            if exp is None:
+                continue
+            scoring = db.get_step_result(exp_id, "scoring")
+            if scoring and isinstance(scoring["data"], dict):
+                score = scoring["data"].get("total_score", "?")
+                decision = scoring["data"].get("decision", "?")
+                click.echo(f"  [{exp_id}] {exp.idea_title}: {score}/100 ({decision})")
+            else:
+                click.echo(f"  [{exp_id}] {exp.idea_title}: (scoring incomplete)")
     finally:
         db.close()
 
@@ -326,12 +375,13 @@ def enqueue_discover(max_ideas: int, dry_run: bool) -> None:
 
 @enqueue.command("run")
 @click.argument("experiment_id", type=int)
+@click.option("--stop-after", "stop_after", type=int, default=None, help="Stop after step N")
 @click.option("--dry-run", is_flag=True)
-def enqueue_run(experiment_id: int, dry_run: bool) -> None:
+def enqueue_run(experiment_id: int, stop_after: int | None, dry_run: bool) -> None:
     """Enqueue a pipeline run task."""
     from verdandi.tasks import run_pipeline_task
 
-    result = run_pipeline_task(experiment_id=experiment_id, dry_run=dry_run)
+    result = run_pipeline_task(experiment_id=experiment_id, dry_run=dry_run, stop_after=stop_after)
     click.echo(f"Pipeline task enqueued: {result}")
 
 
