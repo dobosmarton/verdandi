@@ -56,6 +56,12 @@ def create_app() -> FastAPI:
     app.add_middleware(CorrelationIdMiddleware)
     add_exception_handlers(app)
 
+    # Prometheus metrics endpoint
+    from prometheus_client import make_asgi_app
+
+    metrics_app = make_asgi_app()
+    app.mount("/metrics", metrics_app)
+
     # Mount routes under /api/v1
     prefix = "/api/v1"
     app.include_router(system.router, prefix=prefix)

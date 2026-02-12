@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import pytest
+from pydantic_ai import models
 
 from verdandi.config import Settings
 from verdandi.db import Database
 from verdandi.models.experiment import Experiment, ExperimentStatus
+
+# Safety net: block all real LLM API calls during tests.
+# TestModel and FunctionModel are exempt from this check.
+# If a test accidentally triggers a real model request, it gets
+# a clear error instead of a billable API call.
+models.ALLOW_MODEL_REQUESTS = False
 
 
 @pytest.fixture()

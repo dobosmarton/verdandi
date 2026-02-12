@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 from pydantic import BaseModel
-from pydantic_ai.settings import ModelSettings
+from pydantic_ai.models.anthropic import AnthropicModelSettings
 
 from verdandi.config import Settings
+from verdandi.metrics import llm_tokens_total
 
 if TYPE_CHECKING:
     from pydantic_ai.models.anthropic import AnthropicModel
@@ -42,11 +43,15 @@ class LLMClient:
         self,
         temperature: float | None = None,
         max_tokens: int | None = None,
-    ) -> ModelSettings:
-        """Build model_settings for PydanticAI run_sync()."""
+    ) -> AnthropicModelSettings:
+        """Build model_settings with Anthropic prompt caching enabled."""
         temp = temperature if temperature is not None else self.settings.llm_temperature
         tokens = max_tokens if max_tokens is not None else self.settings.llm_max_tokens
-        return ModelSettings(temperature=temp, max_tokens=tokens)
+        return AnthropicModelSettings(
+            temperature=temp,
+            max_tokens=tokens,
+            anthropic_cache_instructions=True,
+        )
 
     def generate(
         self,
@@ -81,9 +86,26 @@ class LLMClient:
             "LLM response",
             model=self.settings.llm_model,
             output_type=response_model.__name__,
-            request_tokens=usage.request_tokens,
-            response_tokens=usage.response_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             total_tokens=usage.total_tokens,
+            cache_read_tokens=usage.cache_read_tokens or 0,
+            cache_write_tokens=usage.cache_write_tokens or 0,
+        )
+
+        # Record Prometheus token counters
+        model_label = self.settings.llm_model
+        llm_tokens_total.labels(model=model_label, token_type="request").inc(
+            usage.input_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="response").inc(
+            usage.output_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="cache_read").inc(
+            usage.cache_read_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="cache_write").inc(
+            usage.cache_write_tokens or 0
         )
 
         return result.output
@@ -113,9 +135,26 @@ class LLMClient:
             "LLM response",
             model=self.settings.llm_model,
             output_type="str",
-            request_tokens=usage.request_tokens,
-            response_tokens=usage.response_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             total_tokens=usage.total_tokens,
+            cache_read_tokens=usage.cache_read_tokens or 0,
+            cache_write_tokens=usage.cache_write_tokens or 0,
+        )
+
+        # Record Prometheus token counters
+        model_label = self.settings.llm_model
+        llm_tokens_total.labels(model=model_label, token_type="request").inc(
+            usage.input_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="response").inc(
+            usage.output_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="cache_read").inc(
+            usage.cache_read_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="cache_write").inc(
+            usage.cache_write_tokens or 0
         )
 
         return result.output

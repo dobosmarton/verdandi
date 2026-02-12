@@ -20,6 +20,8 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "structlog>=24.4.0",
     "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "prometheus-client>=0.21.0",
     "redis>=5.0.0",
 ]
 
@@ -73,6 +75,7 @@ ignore = [
 "verdandi/coordination.py" = ["ARG002"]  # Stub embedding similarity
 "verdandi/cli.py" = ["ARG001"]  # Click context/options used indirectly
 "verdandi/api/routes/*.py" = ["TC001"]  # Annotated deps must be runtime imports for FastAPI DI
+"alembic/**/*.py" = ["UP", "I", "N", "TCH", "ARG"]  # Generated migration code
 
 [tool.ruff.format]
 quote-style = "double"
@@ -100,6 +103,7 @@ module = [
     "huey.*",
     "pydantic_ai.*",
     "fakeredis.*",
+    "alembic.*",
 ]
 ignore_missing_imports = true
 

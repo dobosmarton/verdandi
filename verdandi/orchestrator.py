@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time as time_mod
 import uuid
 from typing import TYPE_CHECKING
 
 import structlog
 
+from verdandi.metrics import step_duration_seconds, step_executions_total
 from verdandi.models.experiment import Experiment, ExperimentStatus
 from verdandi.models.scoring import Decision
 from verdandi.retry import CircuitBreaker, with_retry
@@ -131,12 +133,18 @@ class PipelineRunner:
                 ) -> BaseModel:
                     return _b.call(lambda: _s.run(_c))
 
+                _t0 = time_mod.monotonic()
                 result = with_retry(
                     fn=_run_step,
                     max_retries=self.settings.max_retries,
                     jitter=True,
                 )
+                step_duration_seconds.labels(step_name=step.name).observe(
+                    time_mod.monotonic() - _t0
+                )
+                step_executions_total.labels(step_name=step.name, status="success").inc()
             except Exception as exc:
+                step_executions_total.labels(step_name=step.name, status="error").inc()
                 logger.error("Step failed", step=step.name, step_num=step_num, error=str(exc))
                 self.db.log_event(
                     "step_error",
