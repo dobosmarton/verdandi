@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from verdandi.config import Settings
     from verdandi.db import Database
     from verdandi.models.experiment import Experiment
+    from verdandi.strategies import DiscoveryStrategy
 
 logger = structlog.get_logger()
 
@@ -29,6 +30,7 @@ class StepContext:
     worker_id: str = ""
     correlation_id: str = ""
     exclude_titles: tuple[str, ...] = ()
+    discovery_strategy: DiscoveryStrategy | None = None
 
 
 class AbstractStep(ABC):

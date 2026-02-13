@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     require_human_review: bool = True
     max_retries: int = 3
     score_go_threshold: int = 70
+    discovery_disruption_ratio: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Target ratio of disruption vs moonshot ideas (0.7 = 70% disruption)",
+    )
 
     # LLM settings
     llm_model: str = "claude-sonnet-4-5-20250929"

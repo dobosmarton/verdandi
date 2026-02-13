@@ -34,17 +34,29 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 
 @cli.command()
 @click.option("--max-ideas", default=3, type=int, help="Number of ideas to discover")
+@click.option(
+    "--strategy",
+    type=click.Choice(["auto", "disruption", "moonshot"], case_sensitive=False),
+    default="auto",
+    help="Discovery strategy: auto (portfolio-balanced), disruption, or moonshot",
+)
 @click.option("--dry-run", is_flag=True, help="Use mock data")
 @click.pass_context
-def discover(ctx: click.Context, max_ideas: int, dry_run: bool) -> None:
+def discover(ctx: click.Context, max_ideas: int, strategy: str, dry_run: bool) -> None:
     """Discover new product ideas."""
     from verdandi.orchestrator import PipelineRunner
+
+    strategy_override = None
+    if strategy != "auto":
+        from verdandi.strategies import DISRUPTION_STRATEGY, MOONSHOT_STRATEGY
+
+        strategy_override = DISRUPTION_STRATEGY if strategy == "disruption" else MOONSHOT_STRATEGY
 
     settings = ctx.obj["settings"]
     db = _get_db(settings)
     try:
         runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
-        ids = runner.run_discovery_batch(max_ideas=max_ideas)
+        ids = runner.run_discovery_batch(max_ideas=max_ideas, strategy_override=strategy_override)
         click.echo(f"Created {len(ids)} experiments: {ids}")
     finally:
         db.close()

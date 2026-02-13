@@ -5,6 +5,7 @@ from __future__ import annotations
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+from verdandi.models.idea import DiscoveryType
 from verdandi.models.scoring import Decision, PreBuildScore, ScoreComponent
 from verdandi.steps.base import AbstractStep, StepContext, register_step
 
@@ -118,6 +119,33 @@ def _format_competitors(competitors: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _scoring_context_for_discovery_type(discovery_type: DiscoveryType) -> str:
+    """Return scoring guidance tailored to the discovery type."""
+    if discovery_type == DiscoveryType.DISRUPTION:
+        return (
+            "\n\n## Scoring Context\n\n"
+            "This is a **DISRUPTION** idea — it addresses a known pain point in "
+            "existing workflows. When scoring:\n"
+            "- Weight **pain_severity** and **willingness_to_pay** heavily — "
+            "existing paid competitors validate the market\n"
+            "- **Complaint volume** and user group specificity are strong positive signals\n"
+            "- **Frequency** of pain is critical — daily pain scores higher than monthly\n"
+            "- A smaller TAM is acceptable if the pain is severe and frequent\n"
+        )
+    # DiscoveryType.MOONSHOT
+    return (
+        "\n\n## Scoring Context\n\n"
+        "This is a **MOONSHOT** idea — it positions for an emerging trend or "
+        "new capability. When scoring:\n"
+        "- Weight **tam_size** growth potential and **competitor_gaps** more heavily\n"
+        "- A small current market is acceptable if the future scenario and growth "
+        "trajectory are compelling\n"
+        "- Few competitors is expected (the space is new), not a weakness\n"
+        "- **willingness_to_pay** may be unproven — that's acceptable for moonshots\n"
+        "- Novelty and timing ('why now') are key differentiators\n"
+    )
+
+
 @register_step
 class ScoringStep(AbstractStep):
     name = "scoring"
@@ -183,6 +211,9 @@ class ScoringStep(AbstractStep):
             key_findings=_format_bullet_list(research.key_findings),
             novelty_score=novelty_display,
         )
+
+        # Add discovery-type-aware scoring guidance
+        user_prompt += _scoring_context_for_discovery_type(idea.discovery_type)
 
         # Call LLM
         llm = LLMClient(ctx.settings)

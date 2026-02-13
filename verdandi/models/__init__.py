@@ -9,7 +9,15 @@ from verdandi.models.deployment import (
 )
 from verdandi.models.distribution import DistributionResult, SEOSubmission, SocialPost
 from verdandi.models.experiment import Experiment, ExperimentStatus
-from verdandi.models.idea import IdeaCandidate, PainPoint
+from verdandi.models.idea import (
+    ComplaintEvidence,
+    DiscoveryType,
+    IdeaCandidate,
+    OpportunityReport,
+    PainPoint,
+    ProblemReport,
+    TrendSignal,
+)
 from verdandi.models.landing_page import FAQItem, LandingPageContent, Testimonial
 from verdandi.models.mvp import Feature, MVPDefinition
 from verdandi.models.research import Competitor, MarketResearch, SearchResult
@@ -21,8 +29,10 @@ __all__ = [
     "BaseStepResult",
     "CloudflareDeployment",
     "Competitor",
+    "ComplaintEvidence",
     "Decision",
     "DeploymentResult",
+    "DiscoveryType",
     "DistributionResult",
     "DomainInfo",
     "Experiment",
@@ -34,13 +44,16 @@ __all__ = [
     "MVPDefinition",
     "MarketResearch",
     "MetricsSnapshot",
+    "OpportunityReport",
     "PainPoint",
     "PreBuildScore",
+    "ProblemReport",
     "SEOSubmission",
     "ScoreComponent",
     "SearchResult",
     "SocialPost",
     "Testimonial",
+    "TrendSignal",
     "ValidationDecision",
     "ValidationReport",
 ]

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from verdandi.coordination import TopicReservationManager
     from verdandi.db import Database
     from verdandi.embeddings import EmbeddingService
+    from verdandi.strategies import DiscoveryStrategy
 
 logger = structlog.get_logger()
 
@@ -234,19 +235,26 @@ class PipelineRunner:
         )
         logger.info("Experiment completed")
 
-    def run_discovery_batch(self, max_ideas: int = 3) -> list[int]:
+    def run_discovery_batch(
+        self,
+        max_ideas: int = 3,
+        strategy_override: DiscoveryStrategy | None = None,
+    ) -> list[int]:
         """Run Step 0 (Idea Discovery) with novelty-aware dedup.
 
         For each idea slot:
-        1. Generate an idea via Step 0
-        2. Fast-pass dedup: Jaccard fingerprint similarity
-        3. Semantic dedup: embedding cosine similarity (if available)
-        4. Compute novelty score (1.0 = completely novel)
-        5. Reserve the topic atomically
-        6. Create the experiment
+        1. Select a discovery strategy (disruption or moonshot)
+        2. Generate an idea via Step 0 (two-phase: discovery report → synthesis)
+        3. Fast-pass dedup: Jaccard fingerprint similarity
+        4. Semantic dedup: embedding cosine similarity (if available)
+        5. Compute novelty score (1.0 = completely novel)
+        6. Reserve the topic atomically
+        7. Create the experiment and save both discovery report + idea
 
-        If a duplicate is detected, retries up to ``_MAX_DEDUP_RETRIES`` times
-        with LLM exclusion hints to steer toward a different domain.
+        Args:
+            max_ideas: Maximum number of ideas to discover.
+            strategy_override: Force all ideas to use this strategy. When None,
+                uses portfolio-aware ratio balancing.
         """
         from verdandi.coordination import TopicReservationManager
         from verdandi.embeddings import EmbeddingService
@@ -258,6 +266,12 @@ class PipelineRunner:
         step = registry[0]
         mgr = TopicReservationManager(self.db.Session)
         embedder = EmbeddingService()
+
+        # Build strategy schedule for this batch
+        if strategy_override is not None:
+            strategies = [strategy_override] * max_ideas
+        else:
+            strategies = self._build_strategy_schedule(max_ideas)
 
         # Create a temporary experiment for discovery
         temp_exp = Experiment(
@@ -278,17 +292,27 @@ class PipelineRunner:
         all_exclude_titles: list[str] = []
 
         for idea_slot in range(max_ideas):
+            strategy = strategies[idea_slot]
+            logger.info(
+                "Discovery slot",
+                slot=idea_slot,
+                strategy=strategy.name,
+                discovery_type=strategy.discovery_type.value,
+            )
+
             idea = self._discover_unique_idea(
                 step=step,
                 temp_exp=temp_exp,
                 mgr=mgr,
                 embedder=embedder,
                 exclude_titles=all_exclude_titles,
+                discovery_strategy=strategy,
             )
             if idea is None:
                 logger.warning(
                     "Could not find unique idea for slot",
                     slot=idea_slot,
+                    strategy=strategy.name,
                     attempted_retries=_MAX_DEDUP_RETRIES,
                 )
                 continue
@@ -303,6 +327,7 @@ class PipelineRunner:
             exp = self.db.create_experiment(exp)
             assert exp.id is not None
 
+            # Save the idea discovery result
             self.db.save_step_result(
                 experiment_id=exp.id,
                 step_name="idea_discovery",
@@ -310,9 +335,24 @@ class PipelineRunner:
                 data_json=idea.model_dump_json(),
                 worker_id=self.settings.worker_id,
             )
+
+            # Save the intermediate discovery report (if present)
+            report_json = getattr(idea, "discovery_report_json", "")
+            if report_json:
+                self.db.save_step_result(
+                    experiment_id=exp.id,
+                    step_name="discovery_report",
+                    step_number=0,
+                    data_json=report_json,
+                    worker_id=self.settings.worker_id,
+                )
+
+            discovery_type = getattr(idea, "discovery_type", "unknown")
             self.db.log_event(
                 "idea_created",
-                f"Created experiment for: {exp.idea_title} (novelty={getattr(idea, 'novelty_score', 0.0):.2f})",
+                f"Created experiment for: {exp.idea_title} "
+                f"(novelty={getattr(idea, 'novelty_score', 0.0):.2f}, "
+                f"type={discovery_type})",
                 experiment_id=exp.id,
                 worker_id=self.settings.worker_id,
             )
@@ -326,6 +366,56 @@ class PipelineRunner:
         logger.info("Discovery batch complete", count=len(experiment_ids))
         return experiment_ids
 
+    def _build_strategy_schedule(self, count: int) -> list[DiscoveryStrategy]:
+        """Build a strategy schedule using portfolio-aware ratio balancing.
+
+        Checks existing experiments' discovery types and greedily assigns
+        strategies to converge toward the target ratio.
+        """
+        from verdandi.models.idea import DiscoveryType
+        from verdandi.strategies import DISRUPTION_STRATEGY, MOONSHOT_STRATEGY
+
+        target_ratio = self.settings.discovery_disruption_ratio
+
+        # Count existing ideas by type
+        disruption_count = self._count_ideas_by_type(DiscoveryType.DISRUPTION.value)
+        moonshot_count = self._count_ideas_by_type(DiscoveryType.MOONSHOT.value)
+
+        schedule: list[DiscoveryStrategy] = []
+        for _ in range(count):
+            total = disruption_count + moonshot_count
+            # When no data, start with disruption (the majority type)
+            current_ratio = 0.0 if total == 0 else disruption_count / total
+
+            if current_ratio >= target_ratio:
+                schedule.append(MOONSHOT_STRATEGY)
+                moonshot_count += 1
+            else:
+                schedule.append(DISRUPTION_STRATEGY)
+                disruption_count += 1
+
+        logger.info(
+            "Strategy schedule built",
+            schedule=[s.discovery_type.value for s in schedule],
+            target_ratio=target_ratio,
+        )
+        return schedule
+
+    def _count_ideas_by_type(self, discovery_type: str) -> int:
+        """Count existing experiments by discovery type from Step 0 results."""
+        all_experiments = self.db.list_experiments()
+        count = 0
+        for exp in all_experiments:
+            if exp.id is None:
+                continue
+            result = self.db.get_step_result(exp.id, "idea_discovery")
+            if result is None:
+                continue
+            data = result["data"]
+            if isinstance(data, dict) and data.get("discovery_type") == discovery_type:
+                count += 1
+        return count
+
     def _discover_unique_idea(
         self,
         step: AbstractStep,
@@ -333,6 +423,7 @@ class PipelineRunner:
         mgr: TopicReservationManager,
         embedder: EmbeddingService,
         exclude_titles: list[str],
+        discovery_strategy: DiscoveryStrategy | None = None,
     ) -> BaseModel | None:
         """Generate a unique idea with two-pass dedup + novelty scoring.
 
@@ -352,6 +443,7 @@ class PipelineRunner:
                 dry_run=self.dry_run,
                 worker_id=self.settings.worker_id,
                 exclude_titles=tuple(local_excludes),
+                discovery_strategy=discovery_strategy,
             )
 
             result = step.run(ctx)
