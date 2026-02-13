@@ -16,7 +16,19 @@ _SYSTEM_PROMPT = (
     "across 5 dimensions based on the research evidence. Score each dimension "
     "0-100 where 50=neutral, below 40=negative signal, above 70=strong positive. "
     "Be calibrated — only score high when evidence strongly supports it. "
-    "Do not be overly optimistic."
+    "Do not be overly optimistic.\n\n"
+    "Calibration context (derived from startup cohort analysis):\n"
+    "- Category-creating products (defining a new market rather than entering an "
+    "existing one) consistently achieve outsized outcomes — treat clear category "
+    "creation potential as a positive signal across all dimensions\n"
+    "- Vertical AI (domain-specific) outperforms horizontal AI in traction and "
+    "retention — score domain moats and specialized data advantages higher\n"
+    "- Capital efficiency is critical for solo-dev validation — ideas requiring "
+    "significant upfront capital or hardware before proving demand should score "
+    "lower on competitor_gaps and willingness_to_pay\n"
+    "- Prosumer distribution (product usage naturally creates shareable content or "
+    "visible output) is a strong positive signal — factor this into tam_size "
+    "and frequency assessments"
 )
 
 _USER_PROMPT_TEMPLATE = """\

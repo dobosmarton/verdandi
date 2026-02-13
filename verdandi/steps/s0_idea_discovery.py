@@ -49,7 +49,13 @@ _LEGACY_SYSTEM_PROMPT = (
     "You are a product discovery agent analyzing market signals for underserved "
     "pain points. Identify ONE specific, actionable product idea that addresses "
     "a real pain point with evidence. Focus on micro-SaaS ideas that a solo "
-    "developer could build in 1-2 weeks."
+    "developer could build in 1-2 weeks.\n\n"
+    "Sector signals (derived from startup cohort analysis):\n"
+    "Prioritize: high-friction regulated industries (legal, healthcare, finance), "
+    "vertical AI applications over horizontal tools, infrastructure gaps for AI "
+    "agents (tooling, integrations, data pipelines).\n"
+    "Deprioritize: generic AI wrappers without domain moats, pure consumer social "
+    "apps (winner-take-all dynamics, extreme CAC)."
 )
 
 # ---------------------------------------------------------------------------
