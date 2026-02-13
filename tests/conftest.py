@@ -20,11 +20,18 @@ models.ALLOW_MODEL_REQUESTS = False
 def settings() -> Settings:
     return Settings(
         anthropic_api_key="test-key",
+        tavily_api_key="",
+        serper_api_key="",
+        exa_api_key="",
+        perplexity_api_key="",
+        cloudflare_api_token="",
+        redis_url="",
         require_human_review=False,
         data_dir="/tmp/verdandi-test",
         log_level="DEBUG",
         log_format="console",
         max_retries=1,
+        _env_file=None,
     )
 
 

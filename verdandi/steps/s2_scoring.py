@@ -49,6 +49,8 @@ _USER_PROMPT_TEMPLATE = """\
 **Key Findings:**
 {key_findings}
 
+**Novelty Score:** {novelty_score} (1.0=completely novel vs previous experiments, 0.0=already explored)
+
 ## Scoring Dimensions
 
 Score each of the following dimensions from 0 to 100. Provide a reasoning \
@@ -70,6 +72,8 @@ Also provide:
 - A list of key opportunities
 - A reasoning summary explaining the overall assessment
 """
+
+_NOVELTY_BONUS_POINTS = 10
 
 
 class _ScoringLLMOutput(BaseModel):
@@ -161,6 +165,8 @@ class ScoringStep(AbstractStep):
         ]
 
         # Build user prompt
+        novelty_val = idea.novelty_score
+        novelty_display = f"{novelty_val:.2f}" if novelty_val > 0.0 else "(not available)"
         user_prompt = _USER_PROMPT_TEMPLATE.format(
             title=idea.title,
             problem_statement=idea.problem_statement,
@@ -175,6 +181,7 @@ class ScoringStep(AbstractStep):
             willingness_to_pay=research.willingness_to_pay or "(not available)",
             common_complaints=_format_bullet_list(research.common_complaints),
             key_findings=_format_bullet_list(research.key_findings),
+            novelty_score=novelty_display,
         )
 
         # Call LLM
@@ -197,13 +204,20 @@ class ScoringStep(AbstractStep):
                 )
 
         # Compute total score in code (not by the LLM)
-        total = int(sum(c.score * c.weight for c in result.components))
+        base_total = int(sum(c.score * c.weight for c in result.components))
+
+        # Novelty bonus: up to _NOVELTY_BONUS_POINTS extra for exploring new territory
+        novelty_bonus = int(novelty_val * _NOVELTY_BONUS_POINTS)
+        total = min(base_total + novelty_bonus, 100)
+
         threshold = ctx.settings.score_go_threshold
         decision = Decision.GO if total >= threshold else Decision.NO_GO
 
         logger.info(
             "Scoring complete",
             experiment_id=ctx.experiment.id,
+            base_total=base_total,
+            novelty_bonus=novelty_bonus,
             total_score=total,
             threshold=threshold,
             decision=decision.value,

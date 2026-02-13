@@ -144,3 +144,40 @@ class TestPipelineRunner:
         # Step 0 was from discovery; steps 6+ from resume
         assert 0 in step_numbers
         assert 6 in step_numbers
+
+
+class TestDiscoveryDedup:
+    """Tests for novelty-aware dedup in discovery batch."""
+
+    def test_discovery_batch_creates_reservations(self, runner: PipelineRunner, db: Database):
+        """Each discovered idea should create a topic reservation."""
+        from verdandi.coordination import TopicReservationManager
+
+        ids = runner.run_discovery_batch(max_ideas=2)
+        assert len(ids) >= 1
+
+        mgr = TopicReservationManager(db.Session)
+        active = mgr.list_active()
+        # Should have at least as many reservations as ideas
+        assert len(active) >= len(ids)
+
+    def test_discovery_batch_stores_fingerprints(self, runner: PipelineRunner, db: Database):
+        """Reservations should have fingerprints for dedup."""
+        from verdandi.coordination import TopicReservationManager
+
+        runner.run_discovery_batch(max_ideas=1)
+        mgr = TopicReservationManager(db.Session)
+        active = mgr.list_active()
+        assert len(active) >= 1
+        # At least one reservation should have a fingerprint
+        assert any(r["fingerprint"] for r in active)
+
+    def test_discovery_batch_ideas_have_novelty_score(self, runner: PipelineRunner, db: Database):
+        """IdeaCandidate saved in step results should have novelty_score."""
+        ids = runner.run_discovery_batch(max_ideas=1)
+        result = db.get_step_result(ids[0], "idea_discovery")
+        assert result is not None
+        data = result["data"]
+        assert isinstance(data, dict)
+        # novelty_score should exist (may be 0.0 for dry_run mock data)
+        assert "novelty_score" in data

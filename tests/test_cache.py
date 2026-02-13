@@ -40,6 +40,7 @@ def cache_settings() -> Settings:
         data_dir=Path("/tmp/verdandi-test"),
         log_level="DEBUG",
         log_format="console",
+        _env_file=None,
     )
 
 
@@ -54,6 +55,7 @@ def no_cache_settings() -> Settings:
         data_dir=Path("/tmp/verdandi-test"),
         log_level="DEBUG",
         log_format="console",
+        _env_file=None,
     )
 
 
@@ -373,8 +375,9 @@ class TestCollectorCacheIntegration:
 
 
 class TestCacheConfig:
-    def test_default_cache_settings(self) -> None:
-        settings = Settings(anthropic_api_key="test")
+    def test_default_cache_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("REDIS_URL", raising=False)
+        settings = Settings(anthropic_api_key="test", _env_file=None)
         assert settings.research_cache_ttl_hours == 24
         assert settings.research_cache_enabled is True
         assert settings.redis_url == ""

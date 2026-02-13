@@ -251,12 +251,19 @@ class TopicReservationManager:
         self,
         fingerprint: str,
         threshold: float = 0.6,
+        statuses: tuple[str, ...] = ("active",),
     ) -> list[ReservationInfo]:
-        """Find active reservations with similar keyword fingerprints."""
+        """Find reservations with similar keyword fingerprints.
+
+        Args:
+            fingerprint: Keyword fingerprint to compare against.
+            threshold: Jaccard similarity threshold (0.0-1.0).
+            statuses: Reservation statuses to search across.
+        """
         with self._session_factory() as session:
             rows = session.scalars(
                 select(TopicReservationRow).where(
-                    TopicReservationRow.status == "active",
+                    TopicReservationRow.status.in_(statuses),
                     TopicReservationRow.fingerprint.isnot(None),
                 )
             ).all()
@@ -280,14 +287,77 @@ class TopicReservationManager:
         self,
         embedding: list[float],
         threshold: float = 0.82,
+        statuses: tuple[str, ...] = ("active",),
     ) -> list[ReservationInfo]:
-        """Find active reservations with similar embeddings.
+        """Find reservations with similar embeddings via cosine similarity.
 
-        Stubbed for now — returns empty list. Real implementation requires
-        sentence-transformers or similar embedding library.
+        Computes similarity in Python since SQLite lacks vector ops.
+
+        Args:
+            embedding: Query embedding vector.
+            threshold: Cosine similarity threshold (0.0-1.0).
+            statuses: Reservation statuses to search across.
         """
-        # TODO: Implement when sentence-transformers is added
-        return []
+        from verdandi.embeddings import EmbeddingService
+
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(TopicReservationRow).where(
+                    TopicReservationRow.status.in_(statuses),
+                    TopicReservationRow.embedding_json.isnot(None),
+                )
+            ).all()
+
+            matches: list[ReservationInfo] = []
+            for row in rows:
+                stored_emb: list[float] = json.loads(row.embedding_json or "[]")
+                if not stored_emb:
+                    continue
+                sim = EmbeddingService.cosine_similarity(embedding, stored_emb)
+                if sim >= threshold:
+                    matches.append(
+                        ReservationInfo(
+                            id=row.id,
+                            topic_key=row.topic_key,
+                            topic_description=row.topic_description,
+                            worker_id=row.worker_id,
+                            similarity=sim,
+                        )
+                    )
+            return sorted(matches, key=lambda x: -x["similarity"])
+
+    def compute_novelty_score(
+        self,
+        embedding: list[float],
+        statuses: tuple[str, ...] = ("active", "completed"),
+    ) -> float:
+        """Compute novelty score: 1.0 = completely novel, 0.0 = exact duplicate.
+
+        Calculated as ``1 - max_similarity`` across all previous ideas.
+        Returns 1.0 if no previous ideas with embeddings exist.
+        """
+        from verdandi.embeddings import EmbeddingService
+
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(TopicReservationRow).where(
+                    TopicReservationRow.status.in_(statuses),
+                    TopicReservationRow.embedding_json.isnot(None),
+                )
+            ).all()
+
+            if not rows:
+                return 1.0
+
+            max_sim = 0.0
+            for row in rows:
+                stored_emb: list[float] = json.loads(row.embedding_json or "[]")
+                if not stored_emb:
+                    continue
+                sim = EmbeddingService.cosine_similarity(embedding, stored_emb)
+                max_sim = max(max_sim, sim)
+
+            return max(0.0, min(1.0, 1.0 - max_sim))
 
     def list_active(self) -> list[ReservationDict]:
         """List all active topic reservations."""

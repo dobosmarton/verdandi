@@ -25,10 +25,12 @@ def settings() -> Settings:
         serper_api_key="serper-test",
         exa_api_key="exa-test",
         perplexity_api_key="pplx-test",
+        redis_url="",
         require_human_review=False,
         data_dir="/tmp/verdandi-test",
         log_level="DEBUG",
         log_format="console",
+        _env_file=None,
     )
 
 
@@ -36,10 +38,16 @@ def settings() -> Settings:
 def settings_no_keys() -> Settings:
     return Settings(
         anthropic_api_key="test-key",
+        tavily_api_key="",
+        serper_api_key="",
+        exa_api_key="",
+        perplexity_api_key="",
+        redis_url="",
         require_human_review=False,
         data_dir="/tmp/verdandi-test",
         log_level="DEBUG",
         log_format="console",
+        _env_file=None,
     )
 
 

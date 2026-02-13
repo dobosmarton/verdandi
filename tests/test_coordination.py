@@ -158,3 +158,85 @@ class TestTopicReservationManager:
         fp2 = idea_fingerprint("Recipe Cookbook App", "Find and share cooking recipes")
         matches = mgr.find_similar_by_fingerprint(fp2, threshold=0.6)
         assert len(matches) == 0
+
+    def test_find_similar_by_fingerprint_with_completed_status(self, mgr: TopicReservationManager):
+        """Completed reservations should be found when statuses includes 'completed'."""
+        fp1 = idea_fingerprint("Capacity Planning Dashboard", "Plan team capacity for services")
+        mgr.try_reserve("w1", "capacity-planning", fingerprint=fp1)
+        mgr.release("w1", "capacity-planning", completed=True)
+
+        # Default statuses=("active",) should NOT find it
+        fp2 = idea_fingerprint("Capacity Planner", "Plan team capacity for firms")
+        matches_active = mgr.find_similar_by_fingerprint(fp2, threshold=0.3)
+        assert len(matches_active) == 0
+
+        # With completed status, should find it
+        matches_all = mgr.find_similar_by_fingerprint(
+            fp2, threshold=0.3, statuses=("active", "completed")
+        )
+        assert len(matches_all) >= 1
+        assert matches_all[0]["topic_key"] == "capacity-planning"
+
+    def test_find_similar_by_embedding(self, mgr: TopicReservationManager):
+        """Embedding similarity should find semantically similar reservations."""
+        from verdandi.embeddings import EmbeddingService
+
+        embedder = EmbeddingService()
+        if not embedder.is_available:
+            pytest.skip("sentence-transformers not installed")
+
+        emb1 = embedder.embed("AI-powered status page monitoring tool")
+        mgr.try_reserve(
+            "w1",
+            "ai-status-monitor",
+            embedding=emb1,
+            fingerprint="ai|monitor|status",
+        )
+
+        emb2 = embedder.embed("Status page monitor with artificial intelligence")
+        matches = mgr.find_similar_by_embedding(emb2, threshold=0.7)
+        assert len(matches) >= 1
+        assert matches[0]["topic_key"] == "ai-status-monitor"
+
+    def test_compute_novelty_score_no_previous(self, mgr: TopicReservationManager):
+        """With no previous ideas, novelty should be 1.0."""
+        from verdandi.embeddings import EmbeddingService
+
+        embedder = EmbeddingService()
+        if not embedder.is_available:
+            pytest.skip("sentence-transformers not installed")
+
+        emb = embedder.embed("Brand new unique product idea")
+        score = mgr.compute_novelty_score(emb)
+        assert score == 1.0
+
+    def test_compute_novelty_score_with_similar(self, mgr: TopicReservationManager):
+        """Novelty score should be low when a similar idea exists."""
+        from verdandi.embeddings import EmbeddingService
+
+        embedder = EmbeddingService()
+        if not embedder.is_available:
+            pytest.skip("sentence-transformers not installed")
+
+        emb1 = embedder.embed("Capacity Planning Dashboard for Professional Services")
+        mgr.try_reserve("w1", "capacity-dashboard", embedding=emb1)
+
+        emb2 = embedder.embed("Capacity Planner for Professional Services Firms")
+        score = mgr.compute_novelty_score(emb2)
+        # Very similar ideas — novelty should be low
+        assert score < 0.3
+
+    def test_compute_novelty_score_unrelated(self, mgr: TopicReservationManager):
+        """Novelty score should be high for unrelated ideas."""
+        from verdandi.embeddings import EmbeddingService
+
+        embedder = EmbeddingService()
+        if not embedder.is_available:
+            pytest.skip("sentence-transformers not installed")
+
+        emb1 = embedder.embed("Capacity Planning Dashboard for Professional Services")
+        mgr.try_reserve("w1", "capacity-dashboard", embedding=emb1)
+
+        emb2 = embedder.embed("Recipe cookbook app for finding and sharing cooking ideas")
+        score = mgr.compute_novelty_score(emb2)
+        assert score > 0.5

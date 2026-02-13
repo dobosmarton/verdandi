@@ -21,7 +21,7 @@ logger = structlog.get_logger()
 # ---------------------------------------------------------------------------
 
 _DISCOVERY_QUERIES: list[str] = [
-    "trending micro-SaaS ideas 2025",
+    "trending micro-SaaS ideas 2025 and 2026",
     "tools developers wish existed",
     "underserved pain points for small businesses",
 ]
@@ -234,10 +234,21 @@ def _extract_source_urls(research_text: str) -> list[str]:
     return urls
 
 
-def _build_user_prompt(research_text: str, *, has_research: bool) -> str:
-    """Build the user prompt for idea discovery LLM call."""
+def _build_user_prompt(
+    research_text: str,
+    *,
+    has_research: bool,
+    exclude_titles: list[str] | None = None,
+) -> str:
+    """Build the user prompt for idea discovery LLM call.
+
+    Args:
+        research_text: Formatted research context.
+        has_research: Whether research data was successfully collected.
+        exclude_titles: Previously discovered idea titles to avoid.
+    """
     if has_research:
-        return (
+        prompt = (
             "Based on the following market research signals, identify ONE specific, "
             "actionable micro-SaaS product idea. The idea must address a real pain "
             "point backed by the evidence below. Include specific pain points with "
@@ -248,14 +259,24 @@ def _build_user_prompt(research_text: str, *, has_research: bool) -> str:
             "Respond with a single structured product idea. Reference source URLs "
             "from the research data in the source_urls field where applicable."
         )
-    return (
-        "No external research data is available. Using your training knowledge, "
-        "identify ONE specific, actionable micro-SaaS product idea that addresses "
-        "a real, underserved pain point. Focus on problems you have strong evidence "
-        "exist based on common developer and small-business complaints. Include "
-        "specific pain points with severity ratings, existing solutions, and how "
-        "this idea differentiates. Be concrete and specific — avoid generic ideas."
-    )
+    else:
+        prompt = (
+            "No external research data is available. Using your training knowledge, "
+            "identify ONE specific, actionable micro-SaaS product idea that addresses "
+            "a real, underserved pain point. Focus on problems you have strong evidence "
+            "exist based on common developer and small-business complaints. Include "
+            "specific pain points with severity ratings, existing solutions, and how "
+            "this idea differentiates. Be concrete and specific — avoid generic ideas."
+        )
+
+    if exclude_titles:
+        prompt += (
+            "\n\nIMPORTANT: Do NOT suggest any of these ideas or close variations:\n"
+            + "\n".join(f"- {t}" for t in exclude_titles)
+            + "\nPropose something in a COMPLETELY DIFFERENT domain or problem space."
+        )
+
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +322,11 @@ class IdeaDiscoveryStep(AbstractStep):
             logger.warning("All research sources failed, falling back to LLM-only discovery")
 
         # --- Synthesize via LLM ---
-        user_prompt = _build_user_prompt(research_text, has_research=has_research)
+        user_prompt = _build_user_prompt(
+            research_text,
+            has_research=has_research,
+            exclude_titles=list(ctx.exclude_titles) if ctx.exclude_titles else None,
+        )
         llm = LLMClient(ctx.settings)
         result = llm.generate(user_prompt, _IdeaLLMOutput, system=_SYSTEM_PROMPT)
 

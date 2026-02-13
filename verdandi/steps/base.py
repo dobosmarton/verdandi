@@ -28,6 +28,7 @@ class StepContext:
     dry_run: bool = False
     worker_id: str = ""
     correlation_id: str = ""
+    exclude_titles: tuple[str, ...] = ()
 
 
 class AbstractStep(ABC):

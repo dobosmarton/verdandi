@@ -17,11 +17,14 @@ from verdandi.steps.base import AbstractStep, StepContext, get_step_registry
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-if TYPE_CHECKING:
     from verdandi.config import Settings
+    from verdandi.coordination import TopicReservationManager
     from verdandi.db import Database
+    from verdandi.embeddings import EmbeddingService
 
 logger = structlog.get_logger()
+
+_MAX_DEDUP_RETRIES = 3
 
 
 class PipelineRunner:
@@ -232,12 +235,30 @@ class PipelineRunner:
         logger.info("Experiment completed")
 
     def run_discovery_batch(self, max_ideas: int = 3) -> list[int]:
-        """Run Step 0 (Idea Discovery) and create experiments for each idea."""
+        """Run Step 0 (Idea Discovery) with novelty-aware dedup.
+
+        For each idea slot:
+        1. Generate an idea via Step 0
+        2. Fast-pass dedup: Jaccard fingerprint similarity
+        3. Semantic dedup: embedding cosine similarity (if available)
+        4. Compute novelty score (1.0 = completely novel)
+        5. Reserve the topic atomically
+        6. Create the experiment
+
+        If a duplicate is detected, retries up to ``_MAX_DEDUP_RETRIES`` times
+        with LLM exclusion hints to steer toward a different domain.
+        """
+        from verdandi.coordination import TopicReservationManager
+        from verdandi.embeddings import EmbeddingService
+
         registry = get_step_registry()
         if 0 not in registry:
             raise RuntimeError("Step 0 (idea_discovery) not registered")
 
         step = registry[0]
+        mgr = TopicReservationManager(self.db.Session)
+        embedder = EmbeddingService()
+
         # Create a temporary experiment for discovery
         temp_exp = Experiment(
             idea_title="discovery_batch",
@@ -246,14 +267,6 @@ class PipelineRunner:
         )
         temp_exp = self.db.create_experiment(temp_exp)
 
-        ctx = StepContext(
-            db=self.db,
-            settings=self.settings,
-            experiment=temp_exp,
-            dry_run=self.dry_run,
-            worker_id=self.settings.worker_id,
-        )
-
         self.db.log_event(
             "discovery_start",
             f"Discovering up to {max_ideas} ideas",
@@ -261,15 +274,26 @@ class PipelineRunner:
             worker_id=self.settings.worker_id,
         )
 
-        result = step.run(ctx)
-
-        # The discovery step returns a single IdeaCandidate.
-        # In the real implementation, it would be called multiple times
-        # or return multiple ideas. For now, each call produces one idea.
         experiment_ids: list[int] = []
-        ideas = [result]  # Wrap single result; step can be called multiple times
+        all_exclude_titles: list[str] = []
 
-        for idea in ideas:
+        for idea_slot in range(max_ideas):
+            idea = self._discover_unique_idea(
+                step=step,
+                temp_exp=temp_exp,
+                mgr=mgr,
+                embedder=embedder,
+                exclude_titles=all_exclude_titles,
+            )
+            if idea is None:
+                logger.warning(
+                    "Could not find unique idea for slot",
+                    slot=idea_slot,
+                    attempted_retries=_MAX_DEDUP_RETRIES,
+                )
+                continue
+
+            # Create experiment for the idea
             exp = Experiment(
                 idea_title=getattr(idea, "title", "Untitled"),
                 idea_summary=getattr(idea, "one_liner", ""),
@@ -278,7 +302,7 @@ class PipelineRunner:
             )
             exp = self.db.create_experiment(exp)
             assert exp.id is not None
-            # Save the idea as step 0 result
+
             self.db.save_step_result(
                 experiment_id=exp.id,
                 step_name="idea_discovery",
@@ -288,47 +312,122 @@ class PipelineRunner:
             )
             self.db.log_event(
                 "idea_created",
-                f"Created experiment for: {exp.idea_title}",
+                f"Created experiment for: {exp.idea_title} (novelty={getattr(idea, 'novelty_score', 0.0):.2f})",
                 experiment_id=exp.id,
                 worker_id=self.settings.worker_id,
             )
             experiment_ids.append(exp.id)
+            all_exclude_titles.append(getattr(idea, "title", ""))
 
         # Mark discovery batch experiment as completed
         assert temp_exp.id is not None
-        self.db.update_experiment_status(
-            temp_exp.id,
-            ExperimentStatus.COMPLETED,
-        )
-
-        # Run discovery multiple times for max_ideas
-        for _ in range(max_ideas - 1):
-            result = step.run(ctx)
-            exp = Experiment(
-                idea_title=getattr(result, "title", "Untitled"),
-                idea_summary=getattr(result, "one_liner", ""),
-                status=ExperimentStatus.PENDING,
-                worker_id=self.settings.worker_id,
-            )
-            exp = self.db.create_experiment(exp)
-            assert exp.id is not None
-            self.db.save_step_result(
-                experiment_id=exp.id,
-                step_name="idea_discovery",
-                step_number=0,
-                data_json=result.model_dump_json(),
-                worker_id=self.settings.worker_id,
-            )
-            self.db.log_event(
-                "idea_created",
-                f"Created experiment for: {exp.idea_title}",
-                experiment_id=exp.id,
-                worker_id=self.settings.worker_id,
-            )
-            experiment_ids.append(exp.id)
+        self.db.update_experiment_status(temp_exp.id, ExperimentStatus.COMPLETED)
 
         logger.info("Discovery batch complete", count=len(experiment_ids))
         return experiment_ids
+
+    def _discover_unique_idea(
+        self,
+        step: AbstractStep,
+        temp_exp: Experiment,
+        mgr: TopicReservationManager,
+        embedder: EmbeddingService,
+        exclude_titles: list[str],
+    ) -> BaseModel | None:
+        """Generate a unique idea with two-pass dedup + novelty scoring.
+
+        Returns an IdeaCandidate with novelty_score set, or None if all
+        retry attempts produced duplicates.
+        """
+        from verdandi.coordination import idea_fingerprint, normalize_topic_key
+
+        _all_statuses = ("active", "completed")
+        local_excludes = list(exclude_titles)
+
+        for attempt in range(_MAX_DEDUP_RETRIES + 1):
+            ctx = StepContext(
+                db=self.db,
+                settings=self.settings,
+                experiment=temp_exp,
+                dry_run=self.dry_run,
+                worker_id=self.settings.worker_id,
+                exclude_titles=tuple(local_excludes),
+            )
+
+            result = step.run(ctx)
+            title = getattr(result, "title", "Untitled")
+            one_liner = getattr(result, "one_liner", "")
+
+            # --- Fast pass: Jaccard fingerprint ---
+            fp = idea_fingerprint(title, one_liner)
+            fp_matches = mgr.find_similar_by_fingerprint(fp, threshold=0.6, statuses=_all_statuses)
+            if fp_matches:
+                logger.warning(
+                    "Duplicate detected (fingerprint)",
+                    title=title,
+                    similar_to=fp_matches[0]["topic_key"],
+                    similarity=fp_matches[0]["similarity"],
+                    attempt=attempt + 1,
+                )
+                local_excludes.append(title)
+                continue
+
+            # --- Semantic pass: embedding similarity ---
+            embedding: list[float] = []
+            if embedder.is_available:
+                embedding = embedder.embed(f"{title} {one_liner}")
+                emb_matches = mgr.find_similar_by_embedding(
+                    embedding, threshold=0.82, statuses=_all_statuses
+                )
+                if emb_matches:
+                    logger.warning(
+                        "Duplicate detected (embedding)",
+                        title=title,
+                        similar_to=emb_matches[0]["topic_key"],
+                        similarity=emb_matches[0]["similarity"],
+                        attempt=attempt + 1,
+                    )
+                    local_excludes.append(title)
+                    continue
+
+            # --- Compute novelty score ---
+            novelty_score = 1.0
+            if embedder.is_available and embedding:
+                novelty_score = mgr.compute_novelty_score(embedding)
+
+            # --- Set novelty score on the idea ---
+            result = result.model_copy(update={"novelty_score": novelty_score})
+
+            # --- Reserve the topic ---
+            topic_key = normalize_topic_key(title)
+            reserved = mgr.try_reserve(
+                worker_id=self.settings.worker_id,
+                topic_key=topic_key,
+                topic_description=one_liner,
+                niche_category=getattr(result, "category", ""),
+                fingerprint=fp,
+                embedding=embedding if embedding else None,
+            )
+            if not reserved:
+                logger.warning(
+                    "Topic reservation failed (race condition)",
+                    title=title,
+                    topic_key=topic_key,
+                    attempt=attempt + 1,
+                )
+                local_excludes.append(title)
+                continue
+
+            logger.info(
+                "Unique idea discovered",
+                title=title,
+                novelty_score=novelty_score,
+                topic_key=topic_key,
+                attempt=attempt + 1,
+            )
+            return result
+
+        return None
 
     def run_all_pending(self, *, stop_after: int | None = None) -> None:
         """Run pipeline for all pending/approved experiments."""
