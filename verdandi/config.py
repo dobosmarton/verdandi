@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     research_cache_ttl_hours: int = 24
     research_cache_enabled: bool = True
 
+    # Qdrant vector database (optional, for orchestrator long-term memory)
+    qdrant_url: str = ""  # Empty = disabled. e.g. "http://localhost:6333"
+    qdrant_api_key: str = ""
+
     # Worker identity
     worker_id: str = Field(default_factory=_default_worker_id)
 

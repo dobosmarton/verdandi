@@ -15,7 +15,7 @@ def trigger_discover(
     request: DiscoverRequest,
     _db: DbDep,
 ) -> ActionResponse:
-    from verdandi.tasks import discover_ideas_task
+    from verdandi.orchestrator.scheduler import discover_ideas_task
 
     result = discover_ideas_task(
         max_ideas=request.max_ideas,
@@ -39,7 +39,7 @@ def trigger_run(
     if exp is None:
         raise ValueError(f"Experiment {experiment_id} not found")
 
-    from verdandi.tasks import run_pipeline_task
+    from verdandi.orchestrator.scheduler import run_pipeline_task
 
     result = run_pipeline_task(
         experiment_id=experiment_id,

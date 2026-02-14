@@ -5,9 +5,9 @@ from __future__ import annotations
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.idea import DiscoveryType
 from verdandi.models.scoring import Decision, PreBuildScore, ScoreComponent
-from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 logger = structlog.get_logger()
 
@@ -175,29 +175,34 @@ class ScoringStep(AbstractStep):
         if experiment_id is None:
             raise RuntimeError("Experiment has no ID — cannot run scoring")
 
-        # Retrieve Step 0 (Idea Discovery) result
-        idea_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
-        if idea_result is None:
-            raise RuntimeError(
-                f"Step 0 (idea_discovery) result not found for experiment {ctx.experiment.id}. "
-                "Cannot score without an idea."
-            )
-        idea_data = idea_result["data"]
-        if not isinstance(idea_data, dict):
-            raise RuntimeError("Step 0 result data is not a valid dict")
-        idea = IdeaCandidate.model_validate(idea_data)
+        # Retrieve Step 0 (Idea Discovery) + Step 1 (Deep Research) results
+        if ctx.prior_results is not None:
+            idea = ctx.prior_results.get_typed("idea_discovery", IdeaCandidate)
+            research = ctx.prior_results.get_typed("deep_research", MarketResearch)
+        elif ctx.db is not None:
+            idea_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
+            if idea_result is None:
+                raise RuntimeError(
+                    f"Step 0 (idea_discovery) result not found for experiment {ctx.experiment.id}. "
+                    "Cannot score without an idea."
+                )
+            idea_data = idea_result["data"]
+            if not isinstance(idea_data, dict):
+                raise RuntimeError("Step 0 result data is not a valid dict")
+            idea = IdeaCandidate.model_validate(idea_data)
 
-        # Retrieve Step 1 (Deep Research) result
-        research_result = ctx.db.get_step_result(experiment_id, "deep_research")
-        if research_result is None:
-            raise RuntimeError(
-                f"Step 1 (deep_research) result not found for experiment {ctx.experiment.id}. "
-                "Cannot score without research data."
-            )
-        research_data = research_result["data"]
-        if not isinstance(research_data, dict):
-            raise RuntimeError("Step 1 result data is not a valid dict")
-        research = MarketResearch.model_validate(research_data)
+            research_result = ctx.db.get_step_result(experiment_id, "deep_research")
+            if research_result is None:
+                raise RuntimeError(
+                    f"Step 1 (deep_research) result not found for experiment {ctx.experiment.id}. "
+                    "Cannot score without research data."
+                )
+            research_data = research_result["data"]
+            if not isinstance(research_data, dict):
+                raise RuntimeError("Step 1 result data is not a valid dict")
+            research = MarketResearch.model_validate(research_data)
+        else:
+            raise RuntimeError("No prior_results or db available to retrieve prerequisites")
 
         # Build competitor list for formatting
         competitors_raw: list[dict[str, object]] = [

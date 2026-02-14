@@ -5,8 +5,8 @@ from __future__ import annotations
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.research import Competitor, MarketResearch, SearchResult
-from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 logger = structlog.get_logger()
 
@@ -43,23 +43,27 @@ class DeepResearchStep(AbstractStep):
             return self._mock_research(ctx)
 
         from verdandi.llm import LLMClient
+        from verdandi.memory.working import ResearchSession
         from verdandi.models.idea import IdeaCandidate
-        from verdandi.research import ResearchCollector, format_research_context
+        from verdandi.research import ResearchCollector
 
         experiment_id = ctx.experiment.id
         if experiment_id is None:
             raise RuntimeError("Experiment has no ID — cannot run deep research")
 
-        # Retrieve Step 0's IdeaCandidate from the database
-        step_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
-        if step_result is None:
-            raise RuntimeError(
-                f"No idea_discovery result found for experiment {ctx.experiment.id}. "
-                "Step 0 must complete before Step 1 can run."
-            )
-
-        idea_data = step_result["data"]
-        idea = IdeaCandidate.model_validate(idea_data)
+        # Retrieve Step 0's IdeaCandidate via prior_results (or DB fallback)
+        if ctx.prior_results is not None:
+            idea = ctx.prior_results.get_typed("idea_discovery", IdeaCandidate)
+        elif ctx.db is not None:
+            step_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
+            if step_result is None:
+                raise RuntimeError(
+                    f"No idea_discovery result found for experiment {ctx.experiment.id}. "
+                    "Step 0 must complete before Step 1 can run."
+                )
+            idea = IdeaCandidate.model_validate(step_result["data"])
+        else:
+            raise RuntimeError("No prior_results or db available to retrieve idea")
 
         logger.info(
             "Starting deep research",
@@ -88,8 +92,10 @@ class DeepResearchStep(AbstractStep):
             exa_similar_url="",
         )
 
-        # Format raw data into a text block for LLM consumption
-        research_text = format_research_context(raw_data)
+        # Accumulate and deduplicate via ResearchSession
+        session = ResearchSession(idea_title=idea.title, idea_category=idea.category)
+        session.ingest(raw_data)
+        research_text = session.formatted_context
 
         # Build prompts for LLM synthesis
         system_prompt = (

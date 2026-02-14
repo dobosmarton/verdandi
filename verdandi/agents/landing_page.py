@@ -7,6 +7,7 @@ from importlib.resources import files
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.landing_page import (
     FAQItem,
     FeatureItem,
@@ -14,7 +15,6 @@ from verdandi.models.landing_page import (
     StatItem,
     Testimonial,
 )
-from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 logger = structlog.get_logger()
 
@@ -59,21 +59,24 @@ class LandingPageStep(AbstractStep):
         if experiment_id is None:
             raise RuntimeError("Experiment has no ID — cannot generate landing page")
 
-        # Retrieve Step 3 result
-        mvp_result = ctx.db.get_step_result(experiment_id, "mvp_definition")
-        if mvp_result is None:
-            msg = (
-                f"Cannot generate landing page: Step 3 (mvp_definition) "
-                f"not found for experiment {ctx.experiment.id}"
-            )
-            raise RuntimeError(msg)
-
-        mvp_data = mvp_result["data"]
-        if not isinstance(mvp_data, dict):
-            msg = f"Invalid MVP definition data for experiment {ctx.experiment.id}"
-            raise RuntimeError(msg)
-
-        mvp = MVPDefinition.model_validate(mvp_data)
+        # Retrieve Step 3 (MVP Definition) result
+        if ctx.prior_results is not None:
+            mvp = ctx.prior_results.get_typed("mvp_definition", MVPDefinition)
+        elif ctx.db is not None:
+            mvp_result = ctx.db.get_step_result(experiment_id, "mvp_definition")
+            if mvp_result is None:
+                msg = (
+                    f"Cannot generate landing page: Step 3 (mvp_definition) "
+                    f"not found for experiment {ctx.experiment.id}"
+                )
+                raise RuntimeError(msg)
+            mvp_data = mvp_result["data"]
+            if not isinstance(mvp_data, dict):
+                msg = f"Invalid MVP definition data for experiment {ctx.experiment.id}"
+                raise RuntimeError(msg)
+            mvp = MVPDefinition.model_validate(mvp_data)
+        else:
+            raise RuntimeError("No prior_results or db available to retrieve MVP")
 
         # Build the features list for the prompt
         features_text = "\n".join(f"- {f.title}: {f.description}" for f in mvp.features)

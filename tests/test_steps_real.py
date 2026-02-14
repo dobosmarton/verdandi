@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from verdandi.agents.base import StepContext
 from verdandi.config import Settings
 from verdandi.db import Database
 from verdandi.models.experiment import Experiment, ExperimentStatus
@@ -26,7 +27,6 @@ from verdandi.models.landing_page import (
 from verdandi.models.mvp import Feature, MVPDefinition
 from verdandi.models.research import Competitor, MarketResearch, SearchResult
 from verdandi.models.scoring import Decision, PreBuildScore, ScoreComponent
-from verdandi.steps.base import StepContext
 
 
 @pytest.fixture()
@@ -66,12 +66,23 @@ def experiment(db: Database) -> Experiment:
 def _make_ctx(
     db: Database, settings: Settings, experiment: Experiment, *, dry_run: bool = False
 ) -> StepContext:
+    from verdandi.agents.base import PriorResults
+
+    # Pre-load prior results (mirrors what the orchestrator does)
+    all_results = db.get_all_step_results(experiment.id or 0)
+    prior_data: dict[str, dict[str, object]] = {}
+    for r in all_results:
+        data = r["data"]
+        if isinstance(data, dict):
+            prior_data[r["step_name"]] = data
+
     return StepContext(
-        db=db,
         settings=settings,
         experiment=experiment,
+        db=db,
         dry_run=dry_run,
         worker_id="test-worker-1",
+        prior_results=PriorResults(prior_data),
     )
 
 
@@ -189,7 +200,7 @@ class TestIdeaDiscoveryStep:
     def test_dry_run_returns_mock_idea(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s0_idea_discovery import IdeaDiscoveryStep
+        from verdandi.agents.discovery import IdeaDiscoveryStep
 
         step = IdeaDiscoveryStep()
         ctx = _make_ctx(db, settings, experiment, dry_run=True)
@@ -207,8 +218,8 @@ class TestIdeaDiscoveryStep:
         settings: Settings,
         experiment: Experiment,
     ) -> None:
+        from verdandi.agents.discovery import IdeaDiscoveryStep, _IdeaLLMOutput
         from verdandi.research import RawResearchData
-        from verdandi.steps.s0_idea_discovery import IdeaDiscoveryStep, _IdeaLLMOutput
 
         # Build mock research data
         mock_raw = RawResearchData(
@@ -280,7 +291,7 @@ class TestDeepResearchStep:
     def test_dry_run_returns_mock_research(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s1_deep_research import DeepResearchStep
+        from verdandi.agents.research import DeepResearchStep
 
         step = DeepResearchStep()
         ctx = _make_ctx(db, settings, experiment, dry_run=True)
@@ -297,11 +308,11 @@ class TestDeepResearchStep:
         settings: Settings,
         experiment: Experiment,
     ) -> None:
-        from verdandi.research import RawResearchData
-        from verdandi.steps.s1_deep_research import (
+        from verdandi.agents.research import (
             DeepResearchStep,
             _MarketResearchLLMOutput,
         )
+        from verdandi.research import RawResearchData
 
         # Seed Step 0 result
         _seed_idea(db, experiment)
@@ -363,7 +374,7 @@ class TestDeepResearchStep:
     def test_real_run_fails_without_idea(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s1_deep_research import DeepResearchStep
+        from verdandi.agents.research import DeepResearchStep
 
         step = DeepResearchStep()
         ctx = _make_ctx(db, settings, experiment)
@@ -381,7 +392,7 @@ class TestScoringStep:
     def test_dry_run_returns_mock_score(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s2_scoring import ScoringStep
+        from verdandi.agents.scoring import ScoringStep
 
         step = ScoringStep()
         ctx = _make_ctx(db, settings, experiment, dry_run=True)
@@ -399,7 +410,7 @@ class TestScoringStep:
         settings: Settings,
         experiment: Experiment,
     ) -> None:
-        from verdandi.steps.s2_scoring import ScoringStep, _ScoringLLMOutput
+        from verdandi.agents.scoring import ScoringStep, _ScoringLLMOutput
 
         # Seed prerequisite steps
         _seed_idea(db, experiment)
@@ -436,7 +447,7 @@ class TestScoringStep:
     def test_real_run_fails_without_prereqs(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s2_scoring import ScoringStep
+        from verdandi.agents.scoring import ScoringStep
 
         step = ScoringStep()
         ctx = _make_ctx(db, settings, experiment)
@@ -454,7 +465,7 @@ class TestMVPDefinitionStep:
     def test_dry_run_returns_mock_mvp(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s3_mvp_definition import MVPDefinitionStep
+        from verdandi.agents.mvp import MVPDefinitionStep
 
         step = MVPDefinitionStep()
         ctx = _make_ctx(db, settings, experiment, dry_run=True)
@@ -471,7 +482,7 @@ class TestMVPDefinitionStep:
         settings: Settings,
         experiment: Experiment,
     ) -> None:
-        from verdandi.steps.s3_mvp_definition import (
+        from verdandi.agents.mvp import (
             MVPDefinitionStep,
             _MVPDefinitionLLMOutput,
         )
@@ -510,12 +521,12 @@ class TestMVPDefinitionStep:
     def test_real_run_fails_without_prereqs(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s3_mvp_definition import MVPDefinitionStep
+        from verdandi.agents.mvp import MVPDefinitionStep
 
         step = MVPDefinitionStep()
         ctx = _make_ctx(db, settings, experiment)
 
-        with pytest.raises(ValueError, match="idea_discovery"):
+        with pytest.raises(RuntimeError, match="idea_discovery"):
             step.run(ctx)
 
 
@@ -528,7 +539,7 @@ class TestLandingPageStep:
     def test_dry_run_returns_mock_content(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s4_landing_page import LandingPageStep
+        from verdandi.agents.landing_page import LandingPageStep
 
         step = LandingPageStep()
         ctx = _make_ctx(db, settings, experiment, dry_run=True)
@@ -546,7 +557,7 @@ class TestLandingPageStep:
         settings: Settings,
         experiment: Experiment,
     ) -> None:
-        from verdandi.steps.s4_landing_page import (
+        from verdandi.agents.landing_page import (
             LandingPageStep,
             _LandingPageLLMOutput,
         )
@@ -599,7 +610,7 @@ class TestLandingPageStep:
     def test_real_run_fails_without_mvp(
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
-        from verdandi.steps.s4_landing_page import LandingPageStep
+        from verdandi.agents.landing_page import LandingPageStep
 
         step = LandingPageStep()
         ctx = _make_ctx(db, settings, experiment)
@@ -620,8 +631,8 @@ class TestStepChain:
         self, db: Database, settings: Settings, experiment: Experiment
     ) -> None:
         """Step 1 can read Step 0's result from DB."""
-        from verdandi.steps.s0_idea_discovery import IdeaDiscoveryStep
-        from verdandi.steps.s1_deep_research import DeepResearchStep
+        from verdandi.agents.discovery import IdeaDiscoveryStep
+        from verdandi.agents.research import DeepResearchStep
 
         # Step 0: dry-run produces an idea
         step0 = IdeaDiscoveryStep()
@@ -649,7 +660,7 @@ class TestStepChain:
         _seed_idea(db, experiment)
         _seed_research(db, experiment)
 
-        from verdandi.steps.s2_scoring import ScoringStep
+        from verdandi.agents.scoring import ScoringStep
 
         step = ScoringStep()
         ctx = _make_ctx(db, settings, experiment, dry_run=True)

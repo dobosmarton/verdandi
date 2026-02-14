@@ -5,8 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.deployment import AnalyticsSetup, DeploymentResult
-from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 if TYPE_CHECKING:
     from pydantic import BaseModel

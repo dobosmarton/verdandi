@@ -1,4 +1,9 @@
-"""Step 5: Human Review — pause pipeline for approval before spending money."""
+"""Step 5: Human Review — pause pipeline for approval before spending money.
+
+The step itself is side-effect-free: it returns a HumanReviewResult indicating
+whether approval is needed. The orchestrator handles the actual DB status
+update and notification dispatch.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +11,9 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.base import BaseStepResult
 from verdandi.models.experiment import ExperimentStatus
-from verdandi.notifications import notify_review_needed
-from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -58,17 +62,7 @@ class HumanReviewStep(AbstractStep):
                 reason="Previously approved",
             )
 
-        # Pause pipeline — set status and notify
-        ctx.db.update_experiment_status(
-            ctx.experiment.id,  # type: ignore[arg-type]
-            ExperimentStatus.AWAITING_REVIEW,
-            current_step=self.step_number,
-        )
-        notify_review_needed(
-            ctx.experiment.id or 0,
-            ctx.experiment.idea_title,
-        )
-
+        # Signal that review is needed — orchestrator handles DB write + notification
         return HumanReviewResult(
             experiment_id=ctx.experiment.id or 0,
             worker_id=ctx.worker_id,

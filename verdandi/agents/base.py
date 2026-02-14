@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 
@@ -14,23 +14,64 @@ if TYPE_CHECKING:
     from verdandi.config import Settings
     from verdandi.db import Database
     from verdandi.models.experiment import Experiment
+    from verdandi.protocols import ReadOnlyMemory
     from verdandi.strategies import DiscoveryStrategy
 
 logger = structlog.get_logger()
 
+_T = TypeVar("_T", bound="BaseModel")
+
+
+class PriorResults:
+    """Read-only access to prior step results, pre-loaded by the orchestrator.
+
+    Agents use this instead of querying the database directly, enforcing
+    the separation between orchestrator (owns writes) and agents (read-only).
+    """
+
+    def __init__(self, results: dict[str, dict[str, object]]) -> None:
+        self._results = results
+
+    def get(self, step_name: str) -> dict[str, object] | None:
+        """Return raw result dict for a step, or None if not found."""
+        return self._results.get(step_name)
+
+    def get_typed(self, step_name: str, model: type[_T]) -> _T:
+        """Validate and return a typed Pydantic model from a prior step result.
+
+        Raises RuntimeError if the step result is missing.
+        """
+        data = self._results.get(step_name)
+        if data is None:
+            raise RuntimeError(
+                f"No result found for step '{step_name}'. "
+                f"The preceding step must complete before this step can run."
+            )
+        return model.model_validate(data)
+
+    def __contains__(self, step_name: str) -> bool:
+        return step_name in self._results
+
 
 @dataclass(frozen=True, slots=True)
 class StepContext:
-    """Bundles everything a step needs to execute."""
+    """Bundles everything a step needs to execute.
 
-    db: Database
+    The orchestrator pre-loads ``prior_results`` and optionally provides
+    a ``memory`` handle.  Direct ``db`` access is deprecated — agents
+    should read prior data via ``prior_results`` instead.
+    """
+
     settings: Settings
     experiment: Experiment
+    db: Database | None = None  # Deprecated: use prior_results instead
     dry_run: bool = False
     worker_id: str = ""
     correlation_id: str = ""
     exclude_titles: tuple[str, ...] = ()
     discovery_strategy: DiscoveryStrategy | None = None
+    prior_results: PriorResults | None = None
+    memory: ReadOnlyMemory | None = None
 
 
 class AbstractStep(ABC):
@@ -46,8 +87,12 @@ class AbstractStep(ABC):
 
     def is_complete(self, ctx: StepContext) -> bool:
         """Check if this step has already been completed for the experiment."""
-        result = ctx.db.get_step_result(ctx.experiment.id, self.name)  # type: ignore[arg-type]
-        return result is not None
+        if ctx.prior_results is not None:
+            return ctx.prior_results.get(self.name) is not None
+        if ctx.db is not None:
+            result = ctx.db.get_step_result(ctx.experiment.id, self.name)  # type: ignore[arg-type]
+            return result is not None
+        return False
 
     def should_skip(self, _ctx: StepContext) -> bool:
         """Override to skip this step conditionally (e.g., human review in dry-run)."""

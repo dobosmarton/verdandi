@@ -10,7 +10,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
-from verdandi.orm import Base
+from verdandi.db.orm import Base
 
 # Alembic Config object (provides access to alembic.ini values)
 config = context.config
@@ -40,7 +40,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode (connected to the database)."""
-    from verdandi.engine import create_db_engine
+    from verdandi.db.engine import create_db_engine
 
     # Get URL from alembic.ini (can be overridden via -x or set_main_option)
     url = config.get_main_option("sqlalchemy.url", "sqlite:///data/verdandi.db")

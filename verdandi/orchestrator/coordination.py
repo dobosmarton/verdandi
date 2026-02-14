@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 import structlog
 from sqlalchemy import CursorResult, select, update
 
-from verdandi.orm import TopicReservationRow
+from verdandi.db.orm import TopicReservationRow
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
@@ -298,7 +298,7 @@ class TopicReservationManager:
             threshold: Cosine similarity threshold (0.0-1.0).
             statuses: Reservation statuses to search across.
         """
-        from verdandi.embeddings import EmbeddingService
+        from verdandi.memory.embeddings import EmbeddingService
 
         with self._session_factory() as session:
             rows = session.scalars(
@@ -336,7 +336,7 @@ class TopicReservationManager:
         Calculated as ``1 - max_similarity`` across all previous ideas.
         Returns 1.0 if no previous ideas with embeddings exist.
         """
-        from verdandi.embeddings import EmbeddingService
+        from verdandi.memory.embeddings import EmbeddingService
 
         with self._session_factory() as session:
             rows = session.scalars(

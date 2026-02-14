@@ -7,8 +7,8 @@ import json
 import structlog
 from pydantic import BaseModel, ConfigDict
 
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.mvp import Feature, MVPDefinition
-from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 logger = structlog.get_logger()
 
@@ -55,18 +55,24 @@ class MVPDefinitionStep(AbstractStep):
         if experiment_id is None:
             raise RuntimeError("Experiment has no ID — cannot define MVP")
 
-        # Retrieve Step 0 (idea) and Step 1 (research) results from DB
-        idea_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
-        if idea_result is None:
-            msg = f"No idea_discovery result found for experiment {ctx.experiment.id}"
-            raise ValueError(msg)
-        idea = IdeaCandidate.model_validate_json(json.dumps(idea_result["data"]))
+        # Retrieve Step 0 (idea) and Step 1 (research) results
+        if ctx.prior_results is not None:
+            idea = ctx.prior_results.get_typed("idea_discovery", IdeaCandidate)
+            research = ctx.prior_results.get_typed("deep_research", MarketResearch)
+        elif ctx.db is not None:
+            idea_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
+            if idea_result is None:
+                msg = f"No idea_discovery result found for experiment {ctx.experiment.id}"
+                raise ValueError(msg)
+            idea = IdeaCandidate.model_validate_json(json.dumps(idea_result["data"]))
 
-        research_result = ctx.db.get_step_result(experiment_id, "deep_research")
-        if research_result is None:
-            msg = f"No deep_research result found for experiment {ctx.experiment.id}"
-            raise ValueError(msg)
-        research = MarketResearch.model_validate_json(json.dumps(research_result["data"]))
+            research_result = ctx.db.get_step_result(experiment_id, "deep_research")
+            if research_result is None:
+                msg = f"No deep_research result found for experiment {ctx.experiment.id}"
+                raise ValueError(msg)
+            research = MarketResearch.model_validate_json(json.dumps(research_result["data"]))
+        else:
+            raise RuntimeError("No prior_results or db available to retrieve prerequisites")
 
         # Build the user prompt with idea and research context
         competitor_summary = "\n".join(

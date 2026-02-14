@@ -296,7 +296,7 @@ class TestScoringContext:
     """Test that scoring step adds discovery-type-aware context."""
 
     def test_disruption_scoring_context(self) -> None:
-        from verdandi.steps.s2_scoring import _scoring_context_for_discovery_type
+        from verdandi.agents.scoring import _scoring_context_for_discovery_type
 
         ctx = _scoring_context_for_discovery_type(DiscoveryType.DISRUPTION)
         assert "DISRUPTION" in ctx
@@ -304,7 +304,7 @@ class TestScoringContext:
         assert "willingness_to_pay" in ctx
 
     def test_moonshot_scoring_context(self) -> None:
-        from verdandi.steps.s2_scoring import _scoring_context_for_discovery_type
+        from verdandi.agents.scoring import _scoring_context_for_discovery_type
 
         ctx = _scoring_context_for_discovery_type(DiscoveryType.MOONSHOT)
         assert "MOONSHOT" in ctx

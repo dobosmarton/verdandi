@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from typing import TYPE_CHECKING
 
 import click
 
@@ -11,12 +12,24 @@ from verdandi.config import Settings
 from verdandi.db import Database
 from verdandi.logging import configure_logging
 
+if TYPE_CHECKING:
+    from verdandi.memory.long_term import LongTermMemory
+
 
 def _get_db(settings: Settings) -> Database:
     settings.ensure_data_dir()
     db = Database(settings.db_path)
     db.init_schema()
     return db
+
+
+def _get_ltm(settings: Settings) -> LongTermMemory | None:
+    """Construct LongTermMemory if Qdrant is configured, else None."""
+    if not settings.qdrant_url:
+        return None
+    from verdandi.memory import long_term
+
+    return long_term.LongTermMemory(settings.qdrant_url, settings.qdrant_api_key)
 
 
 @click.group()
@@ -55,7 +68,9 @@ def discover(ctx: click.Context, max_ideas: int, strategy: str, dry_run: bool) -
     settings = ctx.obj["settings"]
     db = _get_db(settings)
     try:
-        runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
+        runner = PipelineRunner(
+            db=db, settings=settings, dry_run=dry_run, long_term_memory=_get_ltm(settings)
+        )
         ids = runner.run_discovery_batch(max_ideas=max_ideas, strategy_override=strategy_override)
         click.echo(f"Created {len(ids)} experiments: {ids}")
     finally:
@@ -87,7 +102,9 @@ def run(
     settings = ctx.obj["settings"]
     db = _get_db(settings)
     try:
-        runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
+        runner = PipelineRunner(
+            db=db, settings=settings, dry_run=dry_run, long_term_memory=_get_ltm(settings)
+        )
         if run_all:
             runner.run_all_pending(stop_after=stop_after)
         elif experiment_id is not None:
@@ -110,7 +127,9 @@ def research(ctx: click.Context, max_ideas: int, dry_run: bool) -> None:
     settings = ctx.obj["settings"]
     db = _get_db(settings)
     try:
-        runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
+        runner = PipelineRunner(
+            db=db, settings=settings, dry_run=dry_run, long_term_memory=_get_ltm(settings)
+        )
 
         click.echo(f"Discovering {max_ideas} ideas...")
         ids = runner.run_discovery_batch(max_ideas=max_ideas)
@@ -362,7 +381,7 @@ def cache_purge(ctx: click.Context) -> None:
 @click.pass_context
 def worker(ctx: click.Context, workers: int) -> None:
     """Start Huey worker consumer."""
-    from verdandi.tasks import huey
+    from verdandi.orchestrator.scheduler import huey
 
     click.echo(f"Starting Huey consumer with {workers} workers...")
     consumer = huey.create_consumer(workers=workers)
@@ -379,7 +398,7 @@ def enqueue() -> None:
 @click.option("--dry-run", is_flag=True)
 def enqueue_discover(max_ideas: int, dry_run: bool) -> None:
     """Enqueue a discovery task."""
-    from verdandi.tasks import discover_ideas_task
+    from verdandi.orchestrator.scheduler import discover_ideas_task
 
     result = discover_ideas_task(max_ideas=max_ideas, dry_run=dry_run)
     click.echo(f"Discovery task enqueued: {result}")
@@ -391,7 +410,7 @@ def enqueue_discover(max_ideas: int, dry_run: bool) -> None:
 @click.option("--dry-run", is_flag=True)
 def enqueue_run(experiment_id: int, stop_after: int | None, dry_run: bool) -> None:
     """Enqueue a pipeline run task."""
-    from verdandi.tasks import run_pipeline_task
+    from verdandi.orchestrator.scheduler import run_pipeline_task
 
     result = run_pipeline_task(experiment_id=experiment_id, dry_run=dry_run, stop_after=stop_after)
     click.echo(f"Pipeline task enqueued: {result}")
@@ -402,7 +421,7 @@ def enqueue_run(experiment_id: int, stop_after: int | None, dry_run: bool) -> No
 @click.pass_context
 def reservations(ctx: click.Context, active_only: bool) -> None:
     """Show topic reservations."""
-    from verdandi.coordination import TopicReservationManager
+    from verdandi.orchestrator.coordination import TopicReservationManager
 
     settings = ctx.obj["settings"]
     db = _get_db(settings)

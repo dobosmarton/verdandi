@@ -8,19 +8,20 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from verdandi.agents.base import AbstractStep, PriorResults, StepContext, get_step_registry
 from verdandi.metrics import step_duration_seconds, step_executions_total
 from verdandi.models.experiment import Experiment, ExperimentStatus
 from verdandi.models.scoring import Decision
 from verdandi.retry import CircuitBreaker, with_retry
-from verdandi.steps.base import AbstractStep, StepContext, get_step_registry
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from verdandi.config import Settings
-    from verdandi.coordination import TopicReservationManager
     from verdandi.db import Database
-    from verdandi.embeddings import EmbeddingService
+    from verdandi.memory.embeddings import EmbeddingService
+    from verdandi.memory.long_term import LongTermMemory
+    from verdandi.orchestrator.coordination import TopicReservationManager
     from verdandi.strategies import DiscoveryStrategy
 
 logger = structlog.get_logger()
@@ -31,18 +32,47 @@ _MAX_DEDUP_RETRIES = 3
 class PipelineRunner:
     """Orchestrates the execution of pipeline steps for experiments."""
 
-    def __init__(self, db: Database, settings: Settings, dry_run: bool = False):
+    def __init__(
+        self,
+        db: Database,
+        settings: Settings,
+        dry_run: bool = False,
+        long_term_memory: LongTermMemory | None = None,
+    ):
         self.db = db
         self.settings = settings
         self.dry_run = dry_run
+        self._ltm = long_term_memory
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         # Ensure steps are imported and registered
-        import verdandi.steps  # noqa: F401
+        import verdandi.agents  # noqa: F401
 
     def _get_breaker(self, step_name: str) -> CircuitBreaker:
         if step_name not in self._circuit_breakers:
             self._circuit_breakers[step_name] = CircuitBreaker(name=step_name)
         return self._circuit_breakers[step_name]
+
+    def _build_prior_results(self, experiment_id: int) -> PriorResults:
+        """Pre-load all step results for an experiment into PriorResults."""
+        all_results = self.db.get_all_step_results(experiment_id)
+        prior_data: dict[str, dict[str, object]] = {}
+        for r in all_results:
+            data = r["data"]
+            if isinstance(data, dict):
+                prior_data[r["step_name"]] = data
+        return PriorResults(prior_data)
+
+    def _update_ltm_status(self, idea_title: str, status: str) -> None:
+        """Update the Qdrant point status for an experiment's idea.
+
+        Fails silently — Qdrant status updates are best-effort.
+        """
+        if self._ltm is None or not self._ltm.is_available or not idea_title:
+            return
+        from verdandi.orchestrator.coordination import normalize_topic_key
+
+        topic_key = normalize_topic_key(idea_title)
+        self._ltm.update_status(topic_key, status)
 
     def run_experiment(self, experiment_id: int, *, stop_after: int | None = None) -> None:
         """Run remaining steps for an experiment, respecting checkpoints.
@@ -99,13 +129,19 @@ class PipelineRunner:
                 continue  # Step 0 is only run via run_discovery_batch
 
             step = registry[step_num]
+
+            # Pre-load all prior step results for this experiment
+            prior = self._build_prior_results(experiment_id)
+
             ctx = StepContext(
-                db=self.db,
                 settings=self.settings,
                 experiment=exp,
+                db=self.db,
                 dry_run=self.dry_run,
                 worker_id=self.settings.worker_id,
                 correlation_id=correlation_id,
+                prior_results=prior,
+                memory=self._ltm,
             )
 
             # Idempotency check
@@ -160,6 +196,7 @@ class PipelineRunner:
                 self.db.update_experiment_status(
                     experiment_id, ExperimentStatus.FAILED, current_step=step_num
                 )
+                self._update_ltm_status(exp.idea_title, "failed")
                 raise
 
             # Save step result
@@ -196,6 +233,7 @@ class PipelineRunner:
                         self.db.update_experiment_status(
                             experiment_id, ExperimentStatus.NO_GO, current_step=step_num
                         )
+                        self._update_ltm_status(exp.idea_title, "rejected")
                         self.db.log_event(
                             "pipeline_nogo",
                             "Pre-build score below threshold",
@@ -204,10 +242,22 @@ class PipelineRunner:
                         )
                         return
 
-            # Gate: human review
-            if step.name == "human_review" and exp.status == ExperimentStatus.AWAITING_REVIEW:
-                logger.info("Experiment paused for human review")
-                return
+            # Gate: human review — orchestrator handles the side-effect
+            if step.name == "human_review":
+                result_dict = result.model_dump()
+                approved = result_dict.get("approved", False)
+                skipped = result_dict.get("skipped", False)
+                if not approved and not skipped:
+                    from verdandi.notifications import notify_review_needed
+
+                    self.db.update_experiment_status(
+                        experiment_id,
+                        ExperimentStatus.AWAITING_REVIEW,
+                        current_step=step_num,
+                    )
+                    notify_review_needed(experiment_id, exp.idea_title)
+                    logger.info("Experiment paused for human review")
+                    return
 
             # Gate: stop_after — intentional early stop for research-only runs
             if stop_after is not None and step_num >= stop_after:
@@ -227,6 +277,7 @@ class PipelineRunner:
 
         # All steps completed
         self.db.update_experiment_status(experiment_id, ExperimentStatus.COMPLETED)
+        self._update_ltm_status(exp.idea_title, "completed")
         self.db.log_event(
             "pipeline_complete",
             "All steps completed",
@@ -256,8 +307,8 @@ class PipelineRunner:
             strategy_override: Force all ideas to use this strategy. When None,
                 uses portfolio-aware ratio balancing.
         """
-        from verdandi.coordination import TopicReservationManager
-        from verdandi.embeddings import EmbeddingService
+        from verdandi.memory.embeddings import EmbeddingService
+        from verdandi.orchestrator.coordination import TopicReservationManager
 
         registry = get_step_registry()
         if 0 not in registry:
@@ -430,20 +481,21 @@ class PipelineRunner:
         Returns an IdeaCandidate with novelty_score set, or None if all
         retry attempts produced duplicates.
         """
-        from verdandi.coordination import idea_fingerprint, normalize_topic_key
+        from verdandi.orchestrator.coordination import idea_fingerprint, normalize_topic_key
 
         _all_statuses = ("active", "completed")
         local_excludes = list(exclude_titles)
 
         for attempt in range(_MAX_DEDUP_RETRIES + 1):
             ctx = StepContext(
-                db=self.db,
                 settings=self.settings,
                 experiment=temp_exp,
+                db=self.db,
                 dry_run=self.dry_run,
                 worker_id=self.settings.worker_id,
                 exclude_titles=tuple(local_excludes),
                 discovery_strategy=discovery_strategy,
+                prior_results=PriorResults({}),
             )
 
             result = step.run(ctx)
@@ -468,24 +520,49 @@ class PipelineRunner:
             embedding: list[float] = []
             if embedder.is_available:
                 embedding = embedder.embed(f"{title} {one_liner}")
-                emb_matches = mgr.find_similar_by_embedding(
-                    embedding, threshold=0.82, statuses=_all_statuses
-                )
-                if emb_matches:
-                    logger.warning(
-                        "Duplicate detected (embedding)",
-                        title=title,
-                        similar_to=emb_matches[0]["topic_key"],
-                        similarity=emb_matches[0]["similarity"],
-                        attempt=attempt + 1,
+
+                # Qdrant first (O(log n)), fallback to SQLite Python-loop (O(n))
+                is_dup = False
+                if self._ltm is not None and self._ltm.is_available:
+                    qdrant_matches = self._ltm.find_similar_ideas(
+                        embedding, threshold=0.82, status_filter=_all_statuses
                     )
+                    if qdrant_matches:
+                        logger.warning(
+                            "Duplicate detected (Qdrant embedding)",
+                            title=title,
+                            similar_to=qdrant_matches[0].topic_key,
+                            similarity=qdrant_matches[0].similarity,
+                            attempt=attempt + 1,
+                        )
+                        is_dup = True
+                else:
+                    emb_matches = mgr.find_similar_by_embedding(
+                        embedding, threshold=0.82, statuses=_all_statuses
+                    )
+                    if emb_matches:
+                        logger.warning(
+                            "Duplicate detected (embedding)",
+                            title=title,
+                            similar_to=emb_matches[0]["topic_key"],
+                            similarity=emb_matches[0]["similarity"],
+                            attempt=attempt + 1,
+                        )
+                        is_dup = True
+
+                if is_dup:
                     local_excludes.append(title)
                     continue
 
             # --- Compute novelty score ---
             novelty_score = 1.0
             if embedder.is_available and embedding:
-                novelty_score = mgr.compute_novelty_score(embedding)
+                if self._ltm is not None and self._ltm.is_available:
+                    novelty_score = self._ltm.compute_novelty_score(
+                        embedding, status_filter=_all_statuses
+                    )
+                else:
+                    novelty_score = mgr.compute_novelty_score(embedding)
 
             # --- Set novelty score on the idea ---
             result = result.model_copy(update={"novelty_score": novelty_score})
@@ -509,6 +586,21 @@ class PipelineRunner:
                 )
                 local_excludes.append(title)
                 continue
+
+            # Store embedding in Qdrant for future similarity queries
+            if self._ltm is not None and self._ltm.is_available and embedding:
+                self._ltm.store_idea_embedding(
+                    topic_key=topic_key,
+                    embedding=embedding,
+                    payload={
+                        "topic_description": one_liner,
+                        "niche_category": getattr(result, "category", ""),
+                        "worker_id": self.settings.worker_id,
+                        "fingerprint": fp,
+                        "status": "active",
+                        "discovery_type": getattr(result, "discovery_type", "unknown"),
+                    },
+                )
 
             logger.info(
                 "Unique idea discovered",

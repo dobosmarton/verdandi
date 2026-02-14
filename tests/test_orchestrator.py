@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from qdrant_client import QdrantClient  # type: ignore[import-untyped]
 
+from verdandi.memory.long_term import LongTermMemory
 from verdandi.models.experiment import ExperimentStatus
 from verdandi.orchestrator import PipelineRunner
 
@@ -17,6 +19,20 @@ if TYPE_CHECKING:
 @pytest.fixture()
 def runner(db: Database, settings: Settings) -> PipelineRunner:
     return PipelineRunner(db=db, settings=settings, dry_run=True)
+
+
+@pytest.fixture()
+def ltm() -> LongTermMemory:
+    """In-memory Qdrant-backed LTM for testing status lifecycle."""
+    client = QdrantClient(":memory:")
+    mem = LongTermMemory(client=client)
+    mem.ensure_collection()
+    return mem
+
+
+@pytest.fixture()
+def runner_with_ltm(db: Database, settings: Settings, ltm: LongTermMemory) -> PipelineRunner:
+    return PipelineRunner(db=db, settings=settings, dry_run=True, long_term_memory=ltm)
 
 
 class TestPipelineRunner:
@@ -151,7 +167,7 @@ class TestDiscoveryDedup:
 
     def test_discovery_batch_creates_reservations(self, runner: PipelineRunner, db: Database):
         """Each discovered idea should create a topic reservation."""
-        from verdandi.coordination import TopicReservationManager
+        from verdandi.orchestrator.coordination import TopicReservationManager
 
         ids = runner.run_discovery_batch(max_ideas=2)
         assert len(ids) >= 1
@@ -163,7 +179,7 @@ class TestDiscoveryDedup:
 
     def test_discovery_batch_stores_fingerprints(self, runner: PipelineRunner, db: Database):
         """Reservations should have fingerprints for dedup."""
-        from verdandi.coordination import TopicReservationManager
+        from verdandi.orchestrator.coordination import TopicReservationManager
 
         runner.run_discovery_batch(max_ideas=1)
         mgr = TopicReservationManager(db.Session)
@@ -181,3 +197,84 @@ class TestDiscoveryDedup:
         assert isinstance(data, dict)
         # novelty_score should exist (may be 0.0 for dry_run mock data)
         assert "novelty_score" in data
+
+
+class TestLtmStatusLifecycle:
+    """Tests for Qdrant point status updates at pipeline terminal states."""
+
+    @staticmethod
+    def _fake_embedding(seed: float = 0.5) -> list[float]:
+        import math
+
+        return [math.sin(seed * (i + 1)) for i in range(384)]
+
+    def test_update_ltm_status_completed(
+        self, runner_with_ltm: PipelineRunner, ltm: LongTermMemory
+    ):
+        """_update_ltm_status sets point to 'completed'."""
+        emb = self._fake_embedding(1.0)
+        ltm.store_idea_embedding(
+            "test-idea", emb, {"topic_description": "test", "status": "active"}
+        )
+
+        runner_with_ltm._update_ltm_status("Test Idea", "completed")
+
+        results = ltm.find_similar_ideas(emb, threshold=0.5, status_filter=("completed",))
+        assert any(r.topic_key == "test-idea" for r in results)
+
+    def test_update_ltm_status_rejected(self, runner_with_ltm: PipelineRunner, ltm: LongTermMemory):
+        """_update_ltm_status sets point to 'rejected'."""
+        emb = self._fake_embedding(2.0)
+        ltm.store_idea_embedding(
+            "rejected-idea", emb, {"topic_description": "test", "status": "active"}
+        )
+
+        runner_with_ltm._update_ltm_status("Rejected Idea", "rejected")
+
+        results = ltm.find_similar_ideas(emb, threshold=0.5, status_filter=("rejected",))
+        assert any(r.topic_key == "rejected-idea" for r in results)
+
+    def test_update_ltm_status_failed(self, runner_with_ltm: PipelineRunner, ltm: LongTermMemory):
+        """_update_ltm_status sets point to 'failed'."""
+        emb = self._fake_embedding(3.0)
+        ltm.store_idea_embedding(
+            "failed-idea", emb, {"topic_description": "test", "status": "active"}
+        )
+
+        runner_with_ltm._update_ltm_status("Failed Idea", "failed")
+
+        results = ltm.find_similar_ideas(emb, threshold=0.5, status_filter=("failed",))
+        assert any(r.topic_key == "failed-idea" for r in results)
+
+    def test_update_ltm_status_no_ltm_is_noop(self, runner: PipelineRunner):
+        """When LTM is None, _update_ltm_status doesn't raise."""
+        # runner fixture has no LTM — should not raise
+        runner._update_ltm_status("Some Idea", "completed")
+
+    def test_update_ltm_status_empty_title_is_noop(self, runner_with_ltm: PipelineRunner):
+        """Empty idea_title skips the update without error."""
+        runner_with_ltm._update_ltm_status("", "completed")
+
+    def test_pipeline_completed_updates_qdrant(
+        self, runner_with_ltm: PipelineRunner, ltm: LongTermMemory, db: Database
+    ):
+        """Full pipeline completion updates Qdrant point status to 'completed'."""
+        ids = runner_with_ltm.run_discovery_batch(max_ideas=1)
+        exp_id = ids[0]
+        exp = db.get_experiment(exp_id)
+        assert exp is not None
+
+        # Pre-store embedding for this idea so update_status has a target
+        from verdandi.orchestrator.coordination import normalize_topic_key
+
+        topic_key = normalize_topic_key(exp.idea_title)
+        emb = self._fake_embedding(42.0)
+        ltm.store_idea_embedding(
+            topic_key, emb, {"topic_description": exp.idea_title, "status": "active"}
+        )
+
+        runner_with_ltm.run_experiment(exp_id)
+
+        # Verify the point was updated
+        results = ltm.find_similar_ideas(emb, threshold=0.5, status_filter=("completed",))
+        assert any(r.topic_key == topic_key for r in results)

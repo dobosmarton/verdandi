@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
 from huey import SqliteHuey, crontab
 
 from verdandi.config import Settings
+
+if TYPE_CHECKING:
+    from verdandi.memory.long_term import LongTermMemory
 
 logger = structlog.get_logger()
 
@@ -20,6 +25,15 @@ huey = SqliteHuey(
 )
 
 
+def _build_ltm(settings: Settings) -> LongTermMemory | None:
+    """Construct LongTermMemory if Qdrant is configured."""
+    if not settings.qdrant_url:
+        return None
+    from verdandi.memory import long_term
+
+    return long_term.LongTermMemory(settings.qdrant_url, settings.qdrant_api_key)
+
+
 def _discover_ideas(max_ideas: int, dry_run: bool) -> list[int]:
     """Inner logic for idea discovery (not wrapped by Huey)."""
     from verdandi.db import Database
@@ -31,7 +45,9 @@ def _discover_ideas(max_ideas: int, dry_run: bool) -> list[int]:
     db.init_schema()
 
     try:
-        runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
+        runner = PipelineRunner(
+            db=db, settings=settings, dry_run=dry_run, long_term_memory=_build_ltm(settings)
+        )
         return runner.run_discovery_batch(max_ideas=max_ideas)
     finally:
         db.close()
@@ -68,7 +84,9 @@ def run_pipeline_task(
     db.init_schema()
 
     try:
-        runner = PipelineRunner(db=db, settings=settings, dry_run=dry_run)
+        runner = PipelineRunner(
+            db=db, settings=settings, dry_run=dry_run, long_term_memory=_build_ltm(settings)
+        )
         runner.run_experiment(experiment_id, stop_after=stop_after)
         exp = db.get_experiment(experiment_id)
         return exp.status.value if exp else "unknown"

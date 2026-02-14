@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from verdandi.db import LogEntryDict, StepResultDict
+    from verdandi.memory.long_term import SimilarIdeaResult
     from verdandi.models.experiment import Experiment, ExperimentStatus
 
 
@@ -99,3 +100,23 @@ class SearchClientPort(Protocol):
     def search(
         self, query: str, max_results: int = 10
     ) -> list[dict[str, str | int | float | None]]: ...
+
+
+@runtime_checkable
+class ReadOnlyMemory(Protocol):
+    """Read-only interface to the orchestrator's long-term vector memory.
+
+    Agents receive this to query similar ideas without being able to
+    write to the vector store — only the orchestrator writes.
+    """
+
+    @property
+    def is_available(self) -> bool: ...
+
+    def find_similar_ideas(
+        self,
+        embedding: list[float],
+        *,
+        threshold: float = 0.82,
+        limit: int = 5,
+    ) -> list[SimilarIdeaResult]: ...

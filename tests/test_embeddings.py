@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from verdandi.embeddings import EmbeddingService
+from verdandi.memory.embeddings import EmbeddingService
 
 
 @pytest.fixture()

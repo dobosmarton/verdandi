@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from verdandi.coordination import (
+from verdandi.orchestrator.coordination import (
     TopicReservationManager,
     idea_fingerprint,
     jaccard_similarity,
@@ -179,7 +179,7 @@ class TestTopicReservationManager:
 
     def test_find_similar_by_embedding(self, mgr: TopicReservationManager):
         """Embedding similarity should find semantically similar reservations."""
-        from verdandi.embeddings import EmbeddingService
+        from verdandi.memory.embeddings import EmbeddingService
 
         embedder = EmbeddingService()
         if not embedder.is_available:
@@ -200,7 +200,7 @@ class TestTopicReservationManager:
 
     def test_compute_novelty_score_no_previous(self, mgr: TopicReservationManager):
         """With no previous ideas, novelty should be 1.0."""
-        from verdandi.embeddings import EmbeddingService
+        from verdandi.memory.embeddings import EmbeddingService
 
         embedder = EmbeddingService()
         if not embedder.is_available:
@@ -212,7 +212,7 @@ class TestTopicReservationManager:
 
     def test_compute_novelty_score_with_similar(self, mgr: TopicReservationManager):
         """Novelty score should be low when a similar idea exists."""
-        from verdandi.embeddings import EmbeddingService
+        from verdandi.memory.embeddings import EmbeddingService
 
         embedder = EmbeddingService()
         if not embedder.is_available:
@@ -228,7 +228,7 @@ class TestTopicReservationManager:
 
     def test_compute_novelty_score_unrelated(self, mgr: TopicReservationManager):
         """Novelty score should be high for unrelated ideas."""
-        from verdandi.embeddings import EmbeddingService
+        from verdandi.memory.embeddings import EmbeddingService
 
         embedder = EmbeddingService()
         if not embedder.is_available:

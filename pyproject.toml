@@ -24,6 +24,7 @@ dependencies = [
     "prometheus-client>=0.21.0",
     "redis>=5.0.0",
     "sentence-transformers>=3.0.0",
+    "qdrant-client>=1.12.0",
 ]
 
 [project.optional-dependencies]
@@ -71,9 +72,10 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["ARG", "PLR2004"]
 "verdandi/clients/**/*.py" = ["ARG002"]  # Stub methods with future params
+"verdandi/agents/**/*.py" = ["ARG002"]  # Stub methods with future params
 "verdandi/research.py" = ["TCH001"]  # TypedDict imports needed at runtime for Pydantic model fields
 "verdandi/llm.py" = ["ARG002"]  # generate_text temperature/max_tokens passthrough TBD
-"verdandi/embeddings.py" = ["ARG002"]  # is_available check imports without direct use
+"verdandi/memory/embeddings.py" = ["ARG002"]  # is_available check imports without direct use
 "verdandi/cli.py" = ["ARG001"]  # Click context/options used indirectly
 "verdandi/api/routes/*.py" = ["TC001"]  # Annotated deps must be runtime imports for FastAPI DI
 "alembic/**/*.py" = ["UP", "I", "N", "TCH", "ARG"]  # Generated migration code
@@ -105,6 +107,7 @@ module = [
     "pydantic_ai.*",
     "fakeredis.*",
     "alembic.*",
+    "qdrant_client.*",
 ]
 ignore_missing_imports = true
 

@@ -7,8 +7,8 @@ from sqlalchemy import select
 
 from verdandi.api.deps import DbDep
 from verdandi.api.schemas import ActionResponse, ReservationResponse
-from verdandi.coordination import TopicReservationManager
-from verdandi.orm import TopicReservationRow
+from verdandi.db.orm import TopicReservationRow
+from verdandi.orchestrator.coordination import TopicReservationManager
 
 router = APIRouter(prefix="/reservations", tags=["reservations"])
 

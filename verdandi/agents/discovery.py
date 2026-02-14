@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, TypedDict
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.idea import (
     DiscoveryType,
     IdeaCandidate,
@@ -24,7 +25,6 @@ from verdandi.models.idea import (
     PainPoint,
     ProblemReport,
 )
-from verdandi.steps.base import AbstractStep, StepContext, register_step
 
 if TYPE_CHECKING:
     from pydantic import BaseModel as BaseModelType
