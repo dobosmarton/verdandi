@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pydantic import BaseModel
 
     from verdandi.db import LogEntryDict, StepResultDict
     from verdandi.memory.long_term import SimilarIdeaResult
     from verdandi.models.experiment import Experiment, ExperimentStatus
+    from verdandi.research import CollectionConfig, RawResearchData
+
+_T = TypeVar("_T")
 
 
 @runtime_checkable
@@ -144,3 +149,61 @@ class ReadOnlyMemory(Protocol):
         threshold: float = 0.82,
         limit: int = 5,
     ) -> list[SimilarIdeaResult]: ...
+
+
+class CachedCallFn(Protocol):
+    """Callback protocol for the cache→retry→save helper.
+
+    Providers receive this from ResearchCollector to execute API calls
+    with automatic caching and retry. Generic over _T — mypy infers
+    the return type from the fn argument.
+    """
+
+    def __call__(
+        self,
+        source: str,
+        query: str,
+        fn: Callable[[], _T],
+        errors: list[str],
+        *,
+        label: str = "",
+    ) -> _T | None: ...
+
+
+@runtime_checkable
+class ResearchProviderPort(Protocol):
+    """Interface for pluggable research data providers.
+
+    Each provider wraps a single external research API (Tavily, Serper,
+    Exa, etc.) and knows how to collect data from it. The collector
+    iterates over registered providers, runs them in parallel, and
+    merges the results.
+
+    To add a new research source:
+    1. Create a client in ``verdandi/clients/`` (HTTP transport)
+    2. Create a provider in ``verdandi/providers/`` implementing this protocol
+    3. Register it in ``verdandi/providers/__init__.py``
+    """
+
+    @property
+    def name(self) -> str:
+        """Unique provider identifier (e.g. 'tavily', 'serper')."""
+        ...
+
+    @property
+    def is_available(self) -> bool:
+        """Whether this provider is configured and ready to use."""
+        ...
+
+    def collect(
+        self,
+        config: CollectionConfig,
+        cached_call: CachedCallFn,
+    ) -> RawResearchData:
+        """Collect research data, returning a partial RawResearchData.
+
+        Only populate the fields relevant to this provider; all other
+        fields default to empty lists / None. Use ``cached_call`` for
+        each API request to get caching + retry.
+        """
+        ...

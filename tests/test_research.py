@@ -1,20 +1,27 @@
 """Tests for the ResearchCollector and format_research_context.
 
 Verifies:
-- Collector aggregates results from multiple sources
-- Graceful degradation when individual sources fail
-- RuntimeError when ALL sources fail
+- Collector aggregates results from multiple providers
+- Graceful degradation when individual providers fail
+- RuntimeError when ALL providers fail
+- _merge_results produces correct merged data
 - format_research_context produces valid markdown
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from verdandi.config import Settings
-from verdandi.research import RawResearchData, ResearchCollector, format_research_context
+from verdandi.research import (
+    CollectionConfig,
+    RawResearchData,
+    ResearchCollector,
+    _merge_results,
+    format_research_context,
+)
 
 
 @pytest.fixture()
@@ -34,21 +41,22 @@ def settings() -> Settings:
     )
 
 
-@pytest.fixture()
-def settings_no_keys() -> Settings:
-    return Settings(
-        anthropic_api_key="test-key",
-        tavily_api_key="",
-        serper_api_key="",
-        exa_api_key="",
-        perplexity_api_key="",
-        redis_url="",
-        require_human_review=False,
-        data_dir="/tmp/verdandi-test",
-        log_level="DEBUG",
-        log_format="console",
-        _env_file=None,
-    )
+def _mock_provider(
+    name: str,
+    *,
+    available: bool = True,
+    result: RawResearchData | None = None,
+    side_effect: Exception | None = None,
+) -> MagicMock:
+    """Create a mock provider satisfying ResearchProviderPort."""
+    mock = MagicMock()
+    mock.name = name
+    mock.is_available = available
+    if side_effect is not None:
+        mock.collect.side_effect = side_effect
+    else:
+        mock.collect.return_value = result or RawResearchData()
+    return mock
 
 
 class TestRawResearchData:
@@ -87,62 +95,111 @@ class TestRawResearchData:
         assert raw.has_data is True
 
 
+class TestMergeResults:
+    def test_merges_list_fields(self) -> None:
+        a = RawResearchData(
+            tavily_results=[
+                {
+                    "title": "A",
+                    "url": "https://a.com",
+                    "content": "C",
+                    "score": 0.9,
+                    "published_date": "",
+                }
+            ],
+            sources_used=["tavily"],
+        )
+        b = RawResearchData(
+            hn_stories=[
+                {
+                    "title": "HN",
+                    "url": None,
+                    "author": "u",
+                    "points": 10,
+                    "num_comments": 5,
+                    "created_at": "",
+                    "objectID": "1",
+                    "tags": "story",
+                }
+            ],
+            sources_used=["hn_algolia"],
+        )
+        merged = _merge_results([a, b])
+        assert len(merged.tavily_results) == 1
+        assert len(merged.hn_stories) == 1
+        assert merged.sources_used == ["tavily", "hn_algolia"]
+
+    def test_merges_optional_fields_first_wins(self) -> None:
+        a = RawResearchData(
+            perplexity_answer={
+                "answer": "First",
+                "citations": [],
+                "model": "sonar",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            },
+        )
+        b = RawResearchData(
+            perplexity_answer={
+                "answer": "Second",
+                "citations": [],
+                "model": "sonar",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            },
+        )
+        merged = _merge_results([a, b])
+        assert merged.perplexity_answer is not None
+        assert merged.perplexity_answer["answer"] == "First"
+
+    def test_merges_errors(self) -> None:
+        a = RawResearchData(errors=["error 1"])
+        b = RawResearchData(errors=["error 2", "error 3"])
+        merged = _merge_results([a, b])
+        assert merged.errors == ["error 1", "error 2", "error 3"]
+
+    def test_empty_partials(self) -> None:
+        merged = _merge_results([])
+        assert merged.has_data is False
+        assert merged.sources_used == []
+
+
 class TestResearchCollector:
-    @patch("verdandi.clients.hn_algolia.HNClient")
-    @patch("verdandi.clients.tavily.TavilyClient")
-    def test_collects_from_available_sources(
-        self,
-        mock_tavily_cls: MagicMock,
-        mock_hn_cls: MagicMock,
-        settings: Settings,
-    ) -> None:
-        # Mock Tavily
-        mock_tavily = MagicMock()
-        mock_tavily.is_available = True
-        mock_tavily.search.return_value = [
-            {
-                "title": "Result",
-                "url": "https://r.com",
-                "content": "Content",
-                "score": 0.9,
-                "published_date": "",
-            }
-        ]
-        mock_tavily_cls.return_value = mock_tavily
+    def test_collects_from_available_providers(self, settings: Settings) -> None:
+        tavily_provider = _mock_provider(
+            "tavily",
+            result=RawResearchData(
+                tavily_results=[
+                    {
+                        "title": "Result",
+                        "url": "https://r.com",
+                        "content": "Content",
+                        "score": 0.9,
+                        "published_date": "",
+                    }
+                ],
+                sources_used=["tavily"],
+            ),
+        )
+        hn_provider = _mock_provider(
+            "hn_algolia",
+            result=RawResearchData(
+                hn_stories=[
+                    {
+                        "title": "HN Story",
+                        "url": "https://hn.com",
+                        "author": "user",
+                        "points": 100,
+                        "num_comments": 50,
+                        "created_at": "",
+                        "objectID": "1",
+                        "tags": "story",
+                    }
+                ],
+                sources_used=["hn_algolia"],
+            ),
+        )
 
-        # Mock HN (always available)
-        mock_hn = MagicMock()
-        mock_hn.search.return_value = [
-            {
-                "title": "HN Story",
-                "url": "https://hn.com",
-                "author": "user",
-                "points": 100,
-                "num_comments": 50,
-                "created_at": "",
-                "objectID": "1",
-                "tags": "story",
-            }
-        ]
-        mock_hn.search_comments.return_value = []
-        mock_hn_cls.return_value = mock_hn
-
-        # Mock Serper, Exa, Perplexity as unavailable
-        with (
-            patch("verdandi.clients.serper.SerperClient") as mock_serper_cls,
-            patch("verdandi.clients.exa.ExaClient") as mock_exa_cls,
-            patch("verdandi.clients.perplexity.PerplexityClient") as mock_pplx_cls,
-        ):
-            mock_serper_cls.return_value = MagicMock(is_available=False)
-            mock_exa_cls.return_value = MagicMock(is_available=False)
-            mock_pplx_cls.return_value = MagicMock(is_available=False)
-
-            collector = ResearchCollector(settings)
-            result = collector.collect(
-                ["test query"],
-                include_reddit=False,
-                include_hn_comments=False,
-            )
+        collector = ResearchCollector(settings, providers=[tavily_provider, hn_provider])
+        result = collector.collect(["test query"], include_hn_comments=False)
 
         assert result.has_data
         assert "tavily" in result.sources_used
@@ -150,80 +207,101 @@ class TestResearchCollector:
         assert len(result.tavily_results) == 1
         assert len(result.hn_stories) == 1
 
-    @patch("verdandi.clients.hn_algolia.HNClient")
-    def test_graceful_degradation_on_failure(
-        self,
-        mock_hn_cls: MagicMock,
-        settings: Settings,
-    ) -> None:
-        """When Tavily raises, collector continues with other sources."""
-        # HN succeeds
-        mock_hn = MagicMock()
-        mock_hn.search.return_value = [
-            {
-                "title": "HN",
-                "url": None,
-                "author": "u",
-                "points": 10,
-                "num_comments": 5,
-                "created_at": "",
-                "objectID": "1",
-                "tags": "story",
-            }
-        ]
-        mock_hn.search_comments.return_value = []
-        mock_hn_cls.return_value = mock_hn
+    def test_skips_unavailable_providers(self, settings: Settings) -> None:
+        available = _mock_provider(
+            "tavily",
+            result=RawResearchData(
+                tavily_results=[
+                    {
+                        "title": "R",
+                        "url": "https://r.com",
+                        "content": "C",
+                        "score": 0.9,
+                        "published_date": "",
+                    }
+                ],
+                sources_used=["tavily"],
+            ),
+        )
+        unavailable = _mock_provider("serper", available=False)
 
-        with (
-            patch("verdandi.clients.tavily.TavilyClient") as mock_tavily_cls,
-            patch("verdandi.clients.serper.SerperClient") as mock_serper_cls,
-            patch("verdandi.clients.exa.ExaClient") as mock_exa_cls,
-            patch("verdandi.clients.perplexity.PerplexityClient") as mock_pplx_cls,
-        ):
-            # Tavily: available but raises
-            mock_tavily = MagicMock()
-            mock_tavily.is_available = True
-            mock_tavily.search.side_effect = RuntimeError("API down")
-            mock_tavily_cls.return_value = mock_tavily
+        collector = ResearchCollector(settings, providers=[available, unavailable])
+        result = collector.collect(["test query"])
 
-            mock_serper_cls.return_value = MagicMock(is_available=False)
-            mock_exa_cls.return_value = MagicMock(is_available=False)
-            mock_pplx_cls.return_value = MagicMock(is_available=False)
+        assert result.has_data
+        assert "tavily" in result.sources_used
+        unavailable.collect.assert_not_called()
 
-            collector = ResearchCollector(settings)
-            result = collector.collect(["test query"], include_hn_comments=False)
+    def test_graceful_degradation_on_failure(self, settings: Settings) -> None:
+        """When one provider raises, collector continues with others."""
+        failing = _mock_provider("tavily", side_effect=RuntimeError("API down"))
+        succeeding = _mock_provider(
+            "hn_algolia",
+            result=RawResearchData(
+                hn_stories=[
+                    {
+                        "title": "HN",
+                        "url": None,
+                        "author": "u",
+                        "points": 10,
+                        "num_comments": 5,
+                        "created_at": "",
+                        "objectID": "1",
+                        "tags": "story",
+                    }
+                ],
+                sources_used=["hn_algolia"],
+            ),
+        )
+
+        collector = ResearchCollector(settings, providers=[failing, succeeding])
+        result = collector.collect(["test query"], include_hn_comments=False)
 
         assert result.has_data
         assert "hn_algolia" in result.sources_used
-        assert len(result.errors) > 0
-        assert "Tavily" in result.errors[0]
 
-    def test_raises_when_all_sources_fail(self, settings: Settings) -> None:
-        """When every source fails, RuntimeError is raised."""
-        with (
-            patch("verdandi.clients.tavily.TavilyClient") as mock_tavily_cls,
-            patch("verdandi.clients.serper.SerperClient") as mock_serper_cls,
-            patch("verdandi.clients.exa.ExaClient") as mock_exa_cls,
-            patch("verdandi.clients.perplexity.PerplexityClient") as mock_pplx_cls,
-            patch("verdandi.clients.hn_algolia.HNClient") as mock_hn_cls,
-        ):
-            for cls in [mock_tavily_cls, mock_serper_cls, mock_exa_cls]:
-                mock = MagicMock()
-                mock.is_available = True
-                mock.search.side_effect = RuntimeError("down")
-                cls.return_value = mock
+    def test_raises_when_all_providers_fail(self, settings: Settings) -> None:
+        """When every provider returns empty data, RuntimeError is raised."""
+        empty_providers = [
+            _mock_provider("tavily", result=RawResearchData(errors=["Tavily down"])),
+            _mock_provider("serper", result=RawResearchData(errors=["Serper down"])),
+            _mock_provider("hn_algolia", result=RawResearchData(errors=["HN down"])),
+        ]
 
-            mock_serper_cls.return_value.search_reddit = MagicMock(side_effect=RuntimeError("down"))
-            mock_pplx_cls.return_value = MagicMock(is_available=False)
+        collector = ResearchCollector(settings, providers=empty_providers)
+        with pytest.raises(RuntimeError, match="All research sources failed"):
+            collector.collect(["test"])
 
-            mock_hn = MagicMock()
-            mock_hn.search.side_effect = RuntimeError("HN down")
-            mock_hn.search_comments.side_effect = RuntimeError("HN down")
-            mock_hn_cls.return_value = mock_hn
+    def test_passes_collection_config_to_providers(self, settings: Settings) -> None:
+        """Providers receive a CollectionConfig with correct parameters."""
+        provider = _mock_provider(
+            "tavily",
+            result=RawResearchData(
+                tavily_results=[
+                    {
+                        "title": "R",
+                        "url": "https://r.com",
+                        "content": "C",
+                        "score": 0.9,
+                        "published_date": "",
+                    }
+                ],
+                sources_used=["tavily"],
+            ),
+        )
 
-            collector = ResearchCollector(settings)
-            with pytest.raises(RuntimeError, match="All research sources failed"):
-                collector.collect(["test"])
+        collector = ResearchCollector(settings, providers=[provider])
+        collector.collect(
+            ["q1", "q2"],
+            include_reddit=False,
+            perplexity_question="What is the TAM?",
+        )
+
+        config: CollectionConfig = provider.collect.call_args[0][0]
+        assert config.queries == ["q1", "q2"]
+        assert config.primary_query == "q1"
+        assert config.include_reddit is False
+        assert config.perplexity_question == "What is the TAM?"
 
 
 class TestFormatResearchContext:

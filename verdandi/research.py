@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from functools import partial
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
 import structlog
@@ -32,11 +31,29 @@ if TYPE_CHECKING:
 
     from verdandi.cache import ResearchCache
     from verdandi.config import Settings
+    from verdandi.protocols import ResearchProviderPort
 
 logger = structlog.get_logger()
 
-_RESEARCH_WORKERS = 6
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionConfig:
+    """Immutable collection parameters passed to each provider.
+
+    Bundles the kwargs of ``ResearchCollector.collect()`` so providers
+    can read only the fields they need without knowing the full API.
+    """
+
+    queries: list[str]
+    primary_query: str
+    include_reddit: bool = True
+    include_hn_comments: bool = True
+    perplexity_question: str = ""
+    exa_similar_url: str = ""
+    tavily_research_query: str = ""
+    use_perplexity_deep: bool = False
 
 
 class RawResearchData(BaseModel):
@@ -71,65 +88,60 @@ class RawResearchData(BaseModel):
         )
 
 
-# ---------------------------------------------------------------------------
-# Batch result containers for parallel collection
-# ---------------------------------------------------------------------------
-# Each _*Batch is returned by one thread in the ThreadPoolExecutor.
-# Frozen + slots for immutability and low overhead.
+def _merge_results(partials: list[RawResearchData]) -> RawResearchData:
+    """Merge multiple partial RawResearchData objects into one.
 
-
-@dataclass(frozen=True, slots=True)
-class _TavilySearchBatch:
-    results: list[TavilySearchResult] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class _TavilyResearchBatch:
-    research: TavilyResearchResult | None = None
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class _SerperBatch:
-    results: list[SerperResult] = field(default_factory=list)
-    reddit: list[SerperRedditResult] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class _ExaBatch:
-    results: list[ExaSearchResult] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class _PerplexityBatch:
-    answer: PerplexityResult | None = None
-    deep_answer: PerplexityDeepResult | None = None
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class _HNBatch:
-    stories: list[HNStory] = field(default_factory=list)
-    comments: list[HNComment] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
+    List fields are concatenated. Optional fields take the first non-None.
+    Fully typed — no ``Any``.
+    """
+    return RawResearchData(
+        tavily_results=[r for p in partials for r in p.tavily_results],
+        tavily_research=next(
+            (p.tavily_research for p in partials if p.tavily_research is not None),
+            None,
+        ),
+        serper_results=[r for p in partials for r in p.serper_results],
+        serper_reddit=[r for p in partials for r in p.serper_reddit],
+        exa_results=[r for p in partials for r in p.exa_results],
+        perplexity_answer=next(
+            (p.perplexity_answer for p in partials if p.perplexity_answer is not None),
+            None,
+        ),
+        perplexity_deep_answer=next(
+            (p.perplexity_deep_answer for p in partials if p.perplexity_deep_answer is not None),
+            None,
+        ),
+        hn_stories=[r for p in partials for r in p.hn_stories],
+        hn_comments=[r for p in partials for r in p.hn_comments],
+        sources_used=[s for p in partials for s in p.sources_used],
+        errors=[e for p in partials for e in p.errors],
+    )
 
 
 class ResearchCollector:
     """Calls all available research APIs with graceful degradation.
 
-    Each API call is wrapped in try/except. Failures are logged and
-    collected in the errors list, but never abort the collection.
-    Only raises if ALL sources fail to return any data.
+    Each provider runs in its own thread via ``ThreadPoolExecutor``.
+    Failures are logged and collected in the errors list, but never
+    abort the collection.  Only raises if ALL sources fail to return
+    any data.
 
-    API calls run in parallel via ThreadPoolExecutor (one thread per
-    source group). Optionally caches results in Redis when configured.
+    Providers can be injected for testing; otherwise
+    ``default_providers(settings)`` constructs the full set.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        providers: list[ResearchProviderPort] | None = None,
+    ) -> None:
         self.settings = settings
+        if providers is not None:
+            self._providers = providers
+        else:
+            from verdandi.providers import default_providers
+
+            self._providers = default_providers(settings)
         self._cache: ResearchCache | None = None
         if settings.research_cache_enabled and settings.redis_url:
             try:
@@ -195,204 +207,6 @@ class ResearchCollector:
             return None
 
     # ------------------------------------------------------------------
-    # Per-source collection methods (each runs in its own thread)
-    # ------------------------------------------------------------------
-
-    def _collect_tavily_search(self, queries: list[str]) -> _TavilySearchBatch:
-        """Tavily web search across top queries."""
-        from verdandi.clients.tavily import TavilyClient
-
-        tavily = TavilyClient(api_key=self.settings.tavily_api_key)
-        if not tavily.is_available:
-            logger.debug("Tavily not configured, skipping")
-            return _TavilySearchBatch()
-
-        results: list[TavilySearchResult] = []
-        errors: list[str] = []
-        for q in queries[:3]:
-            hits = self._cached_call(
-                "tavily", q, partial(tavily.search, q, max_results=5), errors, label="Tavily search"
-            )
-            if hits is not None:
-                results.extend(hits)
-
-        return _TavilySearchBatch(results=results, errors=errors)
-
-    def _collect_tavily_research(self, tavily_research_query: str) -> _TavilyResearchBatch:
-        """Tavily multi-step deep research."""
-        from verdandi.clients.tavily import TavilyClient
-
-        tavily = TavilyClient(api_key=self.settings.tavily_api_key)
-        if not tavily.is_available or not tavily_research_query:
-            return _TavilyResearchBatch()
-
-        errors: list[str] = []
-        result = self._cached_call(
-            "tavily_research",
-            tavily_research_query,
-            lambda: tavily.research(tavily_research_query),
-            errors,
-            label="Tavily research",
-        )
-        return _TavilyResearchBatch(research=result, errors=errors)
-
-    def _collect_serper(
-        self,
-        queries: list[str],
-        primary_query: str,
-        include_reddit: bool,
-    ) -> _SerperBatch:
-        """Serper Google SERP data + Reddit discussions."""
-        from verdandi.clients.serper import SerperClient
-
-        serper = SerperClient(api_key=self.settings.serper_api_key)
-        if not serper.is_available:
-            logger.debug("Serper not configured, skipping")
-            return _SerperBatch()
-
-        results: list[SerperResult] = []
-        reddit: list[SerperRedditResult] = []
-        errors: list[str] = []
-
-        for q in queries[:2]:
-            hits = self._cached_call(
-                "serper", q, partial(serper.search, q, num=10), errors, label="Serper search"
-            )
-            if hits is not None:
-                results.extend(hits)
-
-        if include_reddit and primary_query:
-            reddit_hits = self._cached_call(
-                "serper_reddit",
-                primary_query,
-                lambda: serper.search_reddit(primary_query),
-                errors,
-                label="Serper Reddit search",
-            )
-            if reddit_hits is not None:
-                reddit.extend(reddit_hits)
-
-        return _SerperBatch(results=results, reddit=reddit, errors=errors)
-
-    def _collect_exa(self, primary_query: str, exa_similar_url: str) -> _ExaBatch:
-        """Exa semantic/neural search + find_similar."""
-        from verdandi.clients.exa import ExaClient
-
-        exa = ExaClient(api_key=self.settings.exa_api_key)
-        if not exa.is_available:
-            logger.debug("Exa not configured, skipping")
-            return _ExaBatch()
-
-        results: list[ExaSearchResult] = []
-        errors: list[str] = []
-
-        if primary_query:
-            hits = self._cached_call(
-                "exa",
-                primary_query,
-                lambda: exa.search(primary_query, num_results=5),
-                errors,
-                label="Exa search",
-            )
-            if hits is not None:
-                results.extend(hits)
-
-        if exa_similar_url:
-            similar = self._cached_call(
-                "exa_similar",
-                exa_similar_url,
-                lambda: exa.find_similar(exa_similar_url),
-                errors,
-                label="Exa find_similar",
-            )
-            if similar is not None:
-                results.extend(
-                    {
-                        "title": s["title"],
-                        "url": s["url"],
-                        "text": s["text"],
-                        "score": s["score"],
-                        "published_date": "",
-                        "author": None,
-                    }
-                    for s in similar
-                )
-
-        return _ExaBatch(results=results, errors=errors)
-
-    def _collect_perplexity(self, perplexity_question: str, use_deep: bool) -> _PerplexityBatch:
-        """Perplexity synthesized answer with citations."""
-        from verdandi.clients.perplexity import PerplexityClient
-
-        perplexity = PerplexityClient(api_key=self.settings.perplexity_api_key)
-        if not perplexity.is_available:
-            logger.debug("Perplexity not configured, skipping")
-            return _PerplexityBatch()
-        if not perplexity_question:
-            logger.debug("No Perplexity question provided, skipping")
-            return _PerplexityBatch()
-
-        errors: list[str] = []
-        if use_deep:
-            cache_key = f"perplexity_deep:{perplexity_question}"
-            result = self._cached_call(
-                "perplexity",
-                cache_key,
-                lambda: perplexity.deep_research(perplexity_question),
-                errors,
-                label="Perplexity deep_research",
-            )
-            if result is None:
-                return _PerplexityBatch(errors=errors)
-            return _PerplexityBatch(answer=result, deep_answer=result, errors=errors)
-
-        basic_result = self._cached_call(
-            "perplexity",
-            perplexity_question,
-            lambda: perplexity.query(perplexity_question),
-            errors,
-            label="Perplexity query",
-        )
-        if basic_result is None:
-            return _PerplexityBatch(errors=errors)
-        return _PerplexityBatch(answer=basic_result, errors=errors)
-
-    def _collect_hn(self, primary_query: str, include_comments: bool) -> _HNBatch:
-        """HN Algolia stories + comments (free, no auth)."""
-        from verdandi.clients.hn_algolia import HNClient
-
-        if not primary_query:
-            return _HNBatch()
-
-        hn = HNClient()
-        stories: list[HNStory] = []
-        comments: list[HNComment] = []
-        errors: list[str] = []
-
-        story_hits = self._cached_call(
-            "hn_stories",
-            primary_query,
-            lambda: hn.search(primary_query, tags="story"),
-            errors,
-            label="HN story search",
-        )
-        if story_hits is not None:
-            stories.extend(story_hits)
-
-        if include_comments:
-            comment_hits = self._cached_call(
-                "hn_comments",
-                primary_query,
-                lambda: hn.search_comments(primary_query),
-                errors,
-                label="HN comment search",
-            )
-            if comment_hits is not None:
-                comments.extend(comment_hits)
-
-        return _HNBatch(stories=stories, comments=comments, errors=errors)
-
-    # ------------------------------------------------------------------
     # Main collection orchestrator
     # ------------------------------------------------------------------
 
@@ -407,11 +221,10 @@ class ResearchCollector:
         tavily_research_query: str = "",
         use_perplexity_deep: bool = False,
     ) -> RawResearchData:
-        """Collect research data from all available APIs in parallel.
+        """Collect research data from all available providers in parallel.
 
-        Submits all 6 source groups to a ThreadPoolExecutor and gathers
-        results. Each source runs in its own thread with independent
-        error handling — one source failing never blocks the others.
+        Each provider runs in its own thread with independent error
+        handling — one provider failing never blocks the others.
 
         Args:
             queries: List of search queries to distribute across APIs.
@@ -430,82 +243,47 @@ class ResearchCollector:
         Raises:
             RuntimeError: If no sources returned any data at all.
         """
-        primary_query = queries[0] if queries else ""
+        config = CollectionConfig(
+            queries=queries,
+            primary_query=queries[0] if queries else "",
+            include_reddit=include_reddit,
+            include_hn_comments=include_hn_comments,
+            perplexity_question=perplexity_question,
+            exa_similar_url=exa_similar_url,
+            tavily_research_query=tavily_research_query,
+            use_perplexity_deep=use_perplexity_deep,
+        )
+
+        available = [p for p in self._providers if p.is_available]
 
         with ThreadPoolExecutor(
-            max_workers=_RESEARCH_WORKERS, thread_name_prefix="research"
+            max_workers=max(len(available), 1),
+            thread_name_prefix="research",
         ) as executor:
-            ft_tavily = executor.submit(self._collect_tavily_search, queries)
-            ft_tavily_r = executor.submit(self._collect_tavily_research, tavily_research_query)
-            ft_serper = executor.submit(
-                self._collect_serper, queries, primary_query, include_reddit
-            )
-            ft_exa = executor.submit(self._collect_exa, primary_query, exa_similar_url)
-            ft_perplexity = executor.submit(
-                self._collect_perplexity, perplexity_question, use_perplexity_deep
-            )
-            ft_hn = executor.submit(self._collect_hn, primary_query, include_hn_comments)
+            futures = {executor.submit(p.collect, config, self._cached_call): p for p in available}
 
-        # All futures complete after exiting the `with` block
-        tavily_batch = ft_tavily.result()
-        tavily_r_batch = ft_tavily_r.result()
-        serper_batch = ft_serper.result()
-        exa_batch = ft_exa.result()
-        perplexity_batch = ft_perplexity.result()
-        hn_batch = ft_hn.result()
+        partials: list[RawResearchData] = []
+        for future, provider in futures.items():
+            try:
+                partials.append(future.result())
+            except Exception as exc:
+                logger.warning(
+                    "Provider failed",
+                    provider=provider.name,
+                    error=str(exc),
+                )
+                partials.append(RawResearchData(errors=[f"{provider.name} failed: {exc}"]))
 
-        # Merge sources_used
-        sources_used: list[str] = []
-        if tavily_batch.results or tavily_r_batch.research:
-            sources_used.append("tavily")
-        if serper_batch.results or serper_batch.reddit:
-            sources_used.append("serper")
-        if exa_batch.results:
-            sources_used.append("exa")
-        if perplexity_batch.answer:
-            sources_used.append("perplexity")
-        if hn_batch.stories or hn_batch.comments:
-            sources_used.append("hn_algolia")
-
-        # Merge errors
-        errors: list[str] = [
-            *tavily_batch.errors,
-            *tavily_r_batch.errors,
-            *serper_batch.errors,
-            *exa_batch.errors,
-            *perplexity_batch.errors,
-            *hn_batch.errors,
-        ]
-
-        raw = RawResearchData(
-            tavily_results=tavily_batch.results,
-            tavily_research=tavily_r_batch.research,
-            serper_results=serper_batch.results,
-            serper_reddit=serper_batch.reddit,
-            exa_results=exa_batch.results,
-            perplexity_answer=perplexity_batch.answer,
-            perplexity_deep_answer=perplexity_batch.deep_answer,
-            hn_stories=hn_batch.stories,
-            hn_comments=hn_batch.comments,
-            sources_used=sources_used,
-            errors=errors,
-        )
+        raw = _merge_results(partials)
 
         logger.info(
             "Research collection complete",
-            sources_used=sources_used,
-            tavily_count=len(tavily_batch.results),
-            serper_count=len(serper_batch.results),
-            reddit_count=len(serper_batch.reddit),
-            exa_count=len(exa_batch.results),
-            has_perplexity=perplexity_batch.answer is not None,
-            hn_stories=len(hn_batch.stories),
-            hn_comments=len(hn_batch.comments),
-            error_count=len(errors),
+            sources_used=raw.sources_used,
+            error_count=len(raw.errors),
         )
 
         if not raw.has_data:
-            raise RuntimeError(f"All research sources failed. Errors: {'; '.join(errors)}")
+            raise RuntimeError(f"All research sources failed. Errors: {'; '.join(raw.errors)}")
 
         return raw
 

@@ -167,13 +167,16 @@ class TestCollectorCacheIntegration:
         self, cache: ResearchCache, settings: Settings
     ) -> ResearchCollector:
         """Create a ResearchCollector with an injected cache."""
+        from verdandi.providers import default_providers
+
         collector = ResearchCollector.__new__(ResearchCollector)
         collector.settings = settings
         collector._cache = cache
+        collector._providers = default_providers(settings)
         return collector
 
-    @patch("verdandi.clients.hn_algolia.HNClient")
-    @patch("verdandi.clients.tavily.TavilyClient")
+    @patch("verdandi.providers.hn.HNClient")
+    @patch("verdandi.providers.tavily.TavilyClient")
     def test_caches_results_after_api_call(
         self,
         mock_tavily_cls: MagicMock,
@@ -201,9 +204,9 @@ class TestCollectorCacheIntegration:
         mock_hn_cls.return_value = mock_hn
 
         with (
-            patch("verdandi.clients.serper.SerperClient") as mock_s,
-            patch("verdandi.clients.exa.ExaClient") as mock_e,
-            patch("verdandi.clients.perplexity.PerplexityClient") as mock_p,
+            patch("verdandi.providers.serper.SerperClient") as mock_s,
+            patch("verdandi.providers.exa.ExaClient") as mock_e,
+            patch("verdandi.providers.perplexity.PerplexityClient") as mock_p,
         ):
             mock_s.return_value = MagicMock(is_available=False)
             mock_e.return_value = MagicMock(is_available=False)
@@ -219,8 +222,8 @@ class TestCollectorCacheIntegration:
         assert len(parsed) == 1
         assert parsed[0]["title"] == "R"
 
-    @patch("verdandi.clients.hn_algolia.HNClient")
-    @patch("verdandi.clients.tavily.TavilyClient")
+    @patch("verdandi.providers.hn.HNClient")
+    @patch("verdandi.providers.tavily.TavilyClient")
     def test_uses_cached_results_skips_api(
         self,
         mock_tavily_cls: MagicMock,
@@ -251,9 +254,9 @@ class TestCollectorCacheIntegration:
         mock_hn_cls.return_value = mock_hn
 
         with (
-            patch("verdandi.clients.serper.SerperClient") as mock_s,
-            patch("verdandi.clients.exa.ExaClient") as mock_e,
-            patch("verdandi.clients.perplexity.PerplexityClient") as mock_p,
+            patch("verdandi.providers.serper.SerperClient") as mock_s,
+            patch("verdandi.providers.exa.ExaClient") as mock_e,
+            patch("verdandi.providers.perplexity.PerplexityClient") as mock_p,
         ):
             mock_s.return_value = MagicMock(is_available=False)
             mock_e.return_value = MagicMock(is_available=False)
@@ -274,11 +277,11 @@ class TestCollectorCacheIntegration:
     def test_works_without_redis(self, no_cache_settings: Settings) -> None:
         """When redis_url is empty, collector works without caching."""
         with (
-            patch("verdandi.clients.tavily.TavilyClient") as mock_t,
-            patch("verdandi.clients.serper.SerperClient") as mock_s,
-            patch("verdandi.clients.exa.ExaClient") as mock_e,
-            patch("verdandi.clients.perplexity.PerplexityClient") as mock_p,
-            patch("verdandi.clients.hn_algolia.HNClient") as mock_hn,
+            patch("verdandi.providers.tavily.TavilyClient") as mock_t,
+            patch("verdandi.providers.serper.SerperClient") as mock_s,
+            patch("verdandi.providers.exa.ExaClient") as mock_e,
+            patch("verdandi.providers.perplexity.PerplexityClient") as mock_p,
+            patch("verdandi.providers.hn.HNClient") as mock_hn,
         ):
             mock_t.return_value = MagicMock(is_available=False)
             mock_s.return_value = MagicMock(is_available=False)
@@ -306,8 +309,8 @@ class TestCollectorCacheIntegration:
             result = collector.collect(["test"], include_hn_comments=False)
             assert result.has_data
 
-    @patch("verdandi.clients.hn_algolia.HNClient")
-    @patch("verdandi.clients.tavily.TavilyClient")
+    @patch("verdandi.providers.hn.HNClient")
+    @patch("verdandi.providers.tavily.TavilyClient")
     def test_graceful_degradation_on_cache_error(
         self,
         mock_tavily_cls: MagicMock,
@@ -339,17 +342,20 @@ class TestCollectorCacheIntegration:
         mock_hn_cls.return_value = mock_hn
 
         with (
-            patch("verdandi.clients.serper.SerperClient") as mock_s,
-            patch("verdandi.clients.exa.ExaClient") as mock_e,
-            patch("verdandi.clients.perplexity.PerplexityClient") as mock_p,
+            patch("verdandi.providers.serper.SerperClient") as mock_s,
+            patch("verdandi.providers.exa.ExaClient") as mock_e,
+            patch("verdandi.providers.perplexity.PerplexityClient") as mock_p,
         ):
             mock_s.return_value = MagicMock(is_available=False)
             mock_e.return_value = MagicMock(is_available=False)
             mock_p.return_value = MagicMock(is_available=False)
 
+            from verdandi.providers import default_providers
+
             collector = ResearchCollector.__new__(ResearchCollector)
             collector.settings = cache_settings
             collector._cache = broken_cache
+            collector._providers = default_providers(cache_settings)
 
             result = collector.collect(
                 ["test query"], include_reddit=False, include_hn_comments=False
@@ -366,6 +372,7 @@ class TestCollectorCacheIntegration:
         collector = ResearchCollector.__new__(ResearchCollector)
         collector.settings = settings
         collector._cache = None  # Simulate what __init__ would do
+        collector._providers = []
         assert collector._cache is None
 
 
