@@ -490,7 +490,13 @@ def report(ctx: click.Context, experiment_id: int, full: bool) -> None:
         # --- SCORING section ---
         if score:
             decision_str = score.decision.value.upper()
-            out(f"\n  SCORING \u2014 {score.total_score}/100 \u2192 {decision_str}")
+            council_indicator = ""
+            if score.council_votes:
+                go_count = sum(
+                    1 for v in score.council_votes if v.decision.value == "go"
+                )
+                council_indicator = f" [Council: {go_count}/{len(score.council_votes)} GO]"
+            out(f"\n  SCORING \u2014 {score.total_score}/100 \u2192 {decision_str}{council_indicator}")
             out(f"  {_SINGLE_LINE}")
 
             if score.components:
@@ -519,6 +525,18 @@ def report(ctx: click.Context, experiment_id: int, full: bool) -> None:
                 out(f"\n  Opportunities ({len(score.opportunities)})")
                 for o in score.opportunities:
                     out(f"    \u2022 {o}")
+
+            if score.council_votes:
+                out("\n  Council Member Votes")
+                for vote in score.council_votes:
+                    vote_decision = vote.decision.value.upper()
+                    out(
+                        f"    {vote.provider_name:<12s} ({vote.model_name}): "
+                        f"{vote.base_score}/100 -> {vote_decision}"
+                    )
+                    if full:
+                        for vc in vote.components:
+                            out(f"      {vc.name:<24s}{vc.score:>3d}/100")
 
         # --- Footer ---
         out(f"\n  {_DOUBLE_LINE}\n")
@@ -617,6 +635,8 @@ def check(ctx: click.Context) -> None:
     settings = ctx.obj["settings"]
     keys = {
         "Anthropic": bool(settings.anthropic_api_key),
+        "OpenAI": bool(settings.openai_api_key),
+        "Google AI": bool(settings.google_api_key),
         "Tavily": bool(settings.tavily_api_key),
         "Serper": bool(settings.serper_api_key),
         "Exa": bool(settings.exa_api_key),

@@ -1,13 +1,23 @@
-"""Step 2: Pre-Build Scoring — quantified go/no-go decision."""
+"""Step 2: Pre-Build Scoring — quantified go/no-go decision.
+
+Supports single-model scoring (default) and multi-model Agent Council
+when ``council_enabled`` is set in configuration.
+"""
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import structlog
 from pydantic import BaseModel, ConfigDict
 
 from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.idea import DiscoveryType
-from verdandi.models.scoring import Decision, PreBuildScore, ScoreComponent
+from verdandi.models.scoring import CouncilMemberVote, Decision, PreBuildScore, ScoreComponent
+
+if TYPE_CHECKING:
+    from verdandi.models.idea import IdeaCandidate
+    from verdandi.models.research import MarketResearch
 
 logger = structlog.get_logger()
 
@@ -167,7 +177,19 @@ class ScoringStep(AbstractStep):
         if ctx.dry_run:
             return self._mock_score(ctx)
 
-        from verdandi.llm import LLMClient
+        if ctx.settings.council_enabled:
+            return self._run_council(ctx)
+
+        return self._run_single(ctx)
+
+    # ------------------------------------------------------------------
+    # Prerequisites & prompt building (shared by single + council paths)
+    # ------------------------------------------------------------------
+
+    def _load_prerequisites(
+        self, ctx: StepContext
+    ) -> tuple[IdeaCandidate, MarketResearch]:
+        """Load idea and research from prior results or database."""
         from verdandi.models.idea import IdeaCandidate
         from verdandi.models.research import MarketResearch
 
@@ -175,7 +197,6 @@ class ScoringStep(AbstractStep):
         if experiment_id is None:
             raise RuntimeError("Experiment has no ID — cannot run scoring")
 
-        # Retrieve Step 0 (Idea Discovery) + Step 1 (Deep Research) results
         if ctx.prior_results is not None:
             idea = ctx.prior_results.get_typed("idea_discovery", IdeaCandidate)
             research = ctx.prior_results.get_typed("deep_research", MarketResearch)
@@ -183,7 +204,7 @@ class ScoringStep(AbstractStep):
             idea_result = ctx.db.get_step_result(experiment_id, "idea_discovery")
             if idea_result is None:
                 raise RuntimeError(
-                    f"Step 0 (idea_discovery) result not found for experiment {ctx.experiment.id}. "
+                    f"Step 0 (idea_discovery) result not found for experiment {experiment_id}. "
                     "Cannot score without an idea."
                 )
             idea_data = idea_result["data"]
@@ -194,7 +215,7 @@ class ScoringStep(AbstractStep):
             research_result = ctx.db.get_step_result(experiment_id, "deep_research")
             if research_result is None:
                 raise RuntimeError(
-                    f"Step 1 (deep_research) result not found for experiment {ctx.experiment.id}. "
+                    f"Step 1 (deep_research) result not found for experiment {experiment_id}. "
                     "Cannot score without research data."
                 )
             research_data = research_result["data"]
@@ -204,12 +225,16 @@ class ScoringStep(AbstractStep):
         else:
             raise RuntimeError("No prior_results or db available to retrieve prerequisites")
 
-        # Build competitor list for formatting
+        return idea, research
+
+    def _build_user_prompt(
+        self, idea: IdeaCandidate, research: MarketResearch
+    ) -> str:
+        """Build the scoring user prompt from idea and research data."""
         competitors_raw: list[dict[str, object]] = [
             comp.model_dump() for comp in research.competitors
         ]
 
-        # Build user prompt
         novelty_val = idea.novelty_score
         novelty_display = f"{novelty_val:.2f}" if novelty_val > 0.0 else "(not available)"
         user_prompt = _USER_PROMPT_TEMPLATE.format(
@@ -229,10 +254,20 @@ class ScoringStep(AbstractStep):
             novelty_score=novelty_display,
         )
 
-        # Add discovery-type-aware scoring guidance
         user_prompt += _scoring_context_for_discovery_type(idea.discovery_type)
+        return user_prompt
 
-        # Call LLM
+    # ------------------------------------------------------------------
+    # Single-model scoring (original path)
+    # ------------------------------------------------------------------
+
+    def _run_single(self, ctx: StepContext) -> PreBuildScore:
+        """Score using a single LLM (original behavior)."""
+        from verdandi.llm import LLMClient
+
+        idea, research = self._load_prerequisites(ctx)
+        user_prompt = self._build_user_prompt(idea, research)
+
         llm = LLMClient(ctx.settings)
         logger.info(
             "Scoring idea via LLM",
@@ -241,7 +276,7 @@ class ScoringStep(AbstractStep):
         )
         result = llm.generate(user_prompt, _ScoringLLMOutput, system=_SYSTEM_PROMPT)
 
-        # Sanity check: warn if all 5 component scores are identical (lazy LLM)
+        # Sanity check: warn if all 5 component scores are identical
         if len(result.components) >= 5:
             scores = [c.score for c in result.components]
             if len(set(scores)) == 1:
@@ -252,9 +287,8 @@ class ScoringStep(AbstractStep):
                 )
 
         # Compute total score in code (not by the LLM)
+        novelty_val = idea.novelty_score
         base_total = int(sum(c.score * c.weight for c in result.components))
-
-        # Novelty bonus: up to _NOVELTY_BONUS_POINTS extra for exploring new territory
         novelty_bonus = int(novelty_val * _NOVELTY_BONUS_POINTS)
         total = min(base_total + novelty_bonus, 100)
 
@@ -281,6 +315,65 @@ class ScoringStep(AbstractStep):
             risks=result.risks,
             opportunities=result.opportunities,
         )
+
+    # ------------------------------------------------------------------
+    # Council scoring (multi-model path)
+    # ------------------------------------------------------------------
+
+    def _run_council(self, ctx: StepContext) -> PreBuildScore:
+        """Score using the Agent Council (multi-model majority vote)."""
+        from verdandi.agents.council import AgentCouncil
+
+        experiment_id = ctx.experiment.id
+        if experiment_id is None:
+            raise RuntimeError("Experiment has no ID — cannot run scoring")
+
+        idea, research = self._load_prerequisites(ctx)
+        user_prompt = self._build_user_prompt(idea, research)
+
+        # Check available provider count
+        available_count = sum([
+            bool(ctx.settings.anthropic_api_key),
+            bool(ctx.settings.openai_api_key),
+            bool(ctx.settings.google_api_key),
+        ])
+
+        if available_count < 2:
+            logger.warning(
+                "Council enabled but < 2 providers available, falling back to single-model",
+                available_providers=available_count,
+                experiment_id=experiment_id,
+            )
+            return self._run_single(ctx)
+
+        logger.info(
+            "Scoring idea via Agent Council",
+            experiment_id=experiment_id,
+            idea_title=idea.title,
+        )
+
+        try:
+            council = AgentCouncil(ctx.settings)
+            return council.evaluate(
+                user_prompt=user_prompt,
+                system_prompt=_SYSTEM_PROMPT,
+                scoring_output_type=_ScoringLLMOutput,
+                experiment_id=experiment_id,
+                worker_id=ctx.worker_id,
+                novelty_score=idea.novelty_score,
+                threshold=ctx.settings.score_go_threshold,
+            )
+        except Exception as exc:
+            logger.error(
+                "Council evaluation failed, falling back to single-model",
+                error=str(exc),
+                experiment_id=experiment_id,
+            )
+            return self._run_single(ctx)
+
+    # ------------------------------------------------------------------
+    # Dry-run mock
+    # ------------------------------------------------------------------
 
     def _mock_score(self, ctx: StepContext) -> PreBuildScore:
         components = [
@@ -319,6 +412,22 @@ class ScoringStep(AbstractStep):
         threshold = ctx.settings.score_go_threshold
         decision = Decision.GO if total >= threshold else Decision.NO_GO
 
+        council_votes: list[CouncilMemberVote] = []
+        if ctx.settings.council_enabled:
+            council_votes = [
+                CouncilMemberVote(
+                    provider_name=provider,
+                    model_name=f"mock-{provider}",
+                    components=components,
+                    base_score=total,
+                    decision=decision,
+                    risks=["Crowded market with well-funded incumbents"],
+                    opportunities=["First-mover advantage in AI-powered niche"],
+                    reasoning_summary=f"Mock {provider} vote.",
+                )
+                for provider in ("anthropic", "openai", "google")
+            ]
+
         return PreBuildScore(
             experiment_id=ctx.experiment.id or 0,
             worker_id=ctx.worker_id,
@@ -334,4 +443,5 @@ class ScoringStep(AbstractStep):
                 "First-mover advantage in AI-powered niche",
                 "Low-cost acquisition via developer communities",
             ],
+            council_votes=council_votes,
         )

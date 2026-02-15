@@ -26,6 +26,35 @@ class ScoreComponent(BaseModel):
     reasoning: str = ""
 
 
+class CouncilMemberVote(BaseModel):
+    """A single council member's independent scoring vote."""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider_name: str
+    model_name: str
+    components: list[ScoreComponent] = Field(default_factory=list)
+    base_score: int = Field(ge=0, le=100)
+    decision: Decision
+    risks: list[str] = Field(default_factory=list)
+    opportunities: list[str] = Field(default_factory=list)
+    reasoning_summary: str = ""
+
+
+class CouncilResult(BaseModel):
+    """Aggregated result from the Agent Council."""
+
+    model_config = ConfigDict(frozen=True)
+
+    votes: list[CouncilMemberVote] = Field(default_factory=list)
+    aggregated_components: list[ScoreComponent] = Field(default_factory=list)
+    total_score: int = Field(ge=0, le=100)
+    decision: Decision
+    reasoning: str = ""
+    aggregated_risks: list[str] = Field(default_factory=list)
+    aggregated_opportunities: list[str] = Field(default_factory=list)
+
+
 class PreBuildScore(BaseStepResult):
     """Output of Step 2: quantified go/no-go decision."""
 
@@ -37,6 +66,7 @@ class PreBuildScore(BaseStepResult):
     reasoning: str = ""
     risks: list[str] = Field(default_factory=list)
     opportunities: list[str] = Field(default_factory=list)
+    council_votes: list[CouncilMemberVote] = Field(default_factory=list)
 
     @classmethod
     def default_components(cls) -> list[ScoreComponent]:

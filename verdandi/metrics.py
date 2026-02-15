@@ -49,6 +49,20 @@ llm_tokens_total = Counter(
     labelnames=["model", "token_type"],
 )
 
+# --- Agent Council ---
+
+council_votes_total = Counter(
+    "verdandi_council_votes_total",
+    "Council votes by provider and decision",
+    labelnames=["provider", "decision"],
+)
+
+council_evaluations_total = Counter(
+    "verdandi_council_evaluations_total",
+    "Council evaluations by final decision",
+    labelnames=["decision", "num_providers"],
+)
+
 # --- Experiments ---
 
 experiments_total = Counter(

@@ -21,7 +21,13 @@ from verdandi.models.idea import (
 from verdandi.models.landing_page import FAQItem, LandingPageContent, Testimonial
 from verdandi.models.mvp import Feature, MVPDefinition
 from verdandi.models.research import Competitor, MarketResearch, SearchResult
-from verdandi.models.scoring import Decision, PreBuildScore, ScoreComponent
+from verdandi.models.scoring import (
+    CouncilMemberVote,
+    CouncilResult,
+    Decision,
+    PreBuildScore,
+    ScoreComponent,
+)
 from verdandi.models.validation import MetricsSnapshot, ValidationDecision, ValidationReport
 
 __all__ = [
@@ -30,6 +36,8 @@ __all__ = [
     "CloudflareDeployment",
     "Competitor",
     "ComplaintEvidence",
+    "CouncilMemberVote",
+    "CouncilResult",
     "Decision",
     "DeploymentResult",
     "DiscoveryType",
