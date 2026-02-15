@@ -218,6 +218,234 @@ def inspect(ctx: click.Context, experiment_id: int, step: str | None, show_log: 
         db.close()
 
 
+def _trunc(items: list[str], limit: int, full: bool) -> list[str]:
+    """Return items[:limit] unless full=True. Appends '...' marker if truncated."""
+    if full or len(items) <= limit:
+        return items
+    return [*items[:limit], f"  ... and {len(items) - limit} more (use --full)"]
+
+
+def _trunc_str(text: str, max_len: int) -> str:
+    """Truncate a string with ellipsis if it exceeds max_len."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
+_DOUBLE_LINE = "\u2550" * 62  # ═
+_SINGLE_LINE = "\u2500" * 56  # ─
+
+
+@cli.command()
+@click.argument("experiment_id", type=int)
+@click.option("--full", is_flag=True, help="Show full details (all results, competitors)")
+@click.pass_context
+def report(ctx: click.Context, experiment_id: int, full: bool) -> None:
+    """Show a human-readable research report for an experiment."""
+    from collections import Counter
+
+    from verdandi.models.idea import IdeaCandidate
+    from verdandi.models.research import MarketResearch
+    from verdandi.models.scoring import PreBuildScore
+
+    settings = ctx.obj["settings"]
+    db = _get_db(settings)
+    try:
+        exp = db.get_experiment(experiment_id)
+        if exp is None:
+            click.echo(f"Experiment {experiment_id} not found.", err=True)
+            sys.exit(1)
+
+        idea_result = db.get_step_result(experiment_id, "idea_discovery")
+        research_result = db.get_step_result(experiment_id, "deep_research")
+        scoring_result = db.get_step_result(experiment_id, "scoring")
+
+        idea = (
+            IdeaCandidate(**idea_result["data"])
+            if idea_result and isinstance(idea_result["data"], dict)
+            else None
+        )
+        mkt = (
+            MarketResearch(**research_result["data"])
+            if research_result and isinstance(research_result["data"], dict)
+            else None
+        )
+        score = (
+            PreBuildScore(**scoring_result["data"])
+            if scoring_result and isinstance(scoring_result["data"], dict)
+            else None
+        )
+
+        out = click.echo
+
+        # --- Header ---
+        out(f"\n  {_DOUBLE_LINE}")
+        out(f"    RESEARCH REPORT \u2014 Experiment #{exp.id}")
+        out(f"  {_DOUBLE_LINE}")
+
+        # --- IDEA section ---
+        if idea:
+            out(f"\n  IDEA: {idea.title}")
+            out(f"  {_SINGLE_LINE}")
+            out(f"  {'One-liner:':<16s}{idea.one_liner}")
+            out(f"  {'Category:':<16s}{idea.category}")
+            out(f"  {'Target:':<16s}{idea.target_audience}")
+            out(f"  {'Novelty:':<16s}{idea.novelty_score:.2f}")
+            out(f"  {'Discovery:':<16s}{idea.discovery_type.value}")
+
+            if idea.problem_statement:
+                out("\n  Problem")
+                for line in idea.problem_statement.splitlines():
+                    out(f"    {line}")
+
+            if idea.pain_points:
+                out(f"\n  Pain Points ({len(idea.pain_points)})")
+                for pp in idea.pain_points[:5] if not full else idea.pain_points:
+                    out(
+                        f"    [{pp.severity}/10] {pp.frequency:<8s}\u2014 {pp.description} ({pp.source})"
+                    )
+                if not full and len(idea.pain_points) > 5:
+                    out(f"    ... and {len(idea.pain_points) - 5} more (use --full)")
+
+            if idea.existing_solutions:
+                out(f"\n  Known Solutions ({len(idea.existing_solutions)})")
+                for sol in _trunc(idea.existing_solutions, 5, full):
+                    out(f"    \u2022 {sol}")
+
+            if idea.differentiation:
+                out("\n  Differentiation")
+                out(f"    {idea.differentiation}")
+        else:
+            out(f"\n  IDEA: {exp.idea_title}")
+            out(f"  {_SINGLE_LINE}")
+            out("  (idea discovery data not available)")
+
+        # --- MARKET RESEARCH section ---
+        if mkt:
+            out("\n  MARKET RESEARCH")
+            out(f"  {_SINGLE_LINE}")
+            if mkt.tam_estimate:
+                out(f"  {'TAM:':<16s}{mkt.tam_estimate}")
+            if mkt.market_growth:
+                out(f"  {'Growth:':<16s}{mkt.market_growth}")
+            if mkt.target_audience_size:
+                out(f"  {'Audience:':<16s}{mkt.target_audience_size}")
+            if mkt.willingness_to_pay:
+                out(f"  {'WTP:':<16s}{mkt.willingness_to_pay}")
+
+            if mkt.demand_signals:
+                out(f"\n  Demand Signals ({len(mkt.demand_signals)})")
+                for sig in _trunc(mkt.demand_signals, 5, full):
+                    out(f"    \u2022 {sig}")
+
+            if mkt.key_findings:
+                out(f"\n  Key Findings ({len(mkt.key_findings)})")
+                for kf in _trunc(mkt.key_findings, 5, full):
+                    out(f"    \u2022 {kf}")
+
+            if mkt.common_complaints:
+                out(f"\n  Common Complaints ({len(mkt.common_complaints)})")
+                for cc in _trunc(mkt.common_complaints, 5, full):
+                    out(f"    \u2022 {cc}")
+
+            # --- COMPETITORS sub-section ---
+            if mkt.competitors:
+                out(f"\n  COMPETITORS ({len(mkt.competitors)} found)")
+                out(f"  {_SINGLE_LINE}")
+                show_competitors = mkt.competitors if full else mkt.competitors[:4]
+                for i, comp in enumerate(show_competitors, 1):
+                    pricing_str = comp.pricing or "N/A"
+                    users_str = comp.estimated_users or ""
+                    name_col = f"{i}. {comp.name}"
+                    out(f"    {name_col:<24s}{pricing_str:<18s}{users_str}")
+                    if comp.description and full:
+                        out(f"       {comp.description}")
+                    if comp.strengths:
+                        shown = comp.strengths if full else comp.strengths[:2]
+                        for s in shown:
+                            out(f"       + {s}")
+                    if comp.weaknesses:
+                        shown = comp.weaknesses if full else comp.weaknesses[:2]
+                        for w in shown:
+                            out(f"       - {w}")
+                    if i < len(show_competitors):
+                        out("")
+                if not full and len(mkt.competitors) > 4:
+                    out(f"    ... and {len(mkt.competitors) - 4} more (use --full)")
+
+            if mkt.competitor_gaps:
+                out(f"\n  Gaps in Existing Solutions ({len(mkt.competitor_gaps)})")
+                for gap in _trunc(mkt.competitor_gaps, 5, full):
+                    out(f"    \u2022 {gap}")
+
+            if mkt.research_summary and full:
+                out("\n  Research Summary")
+                for line in mkt.research_summary.splitlines():
+                    out(f"    {line}")
+
+            # --- Search results footer ---
+            if mkt.search_results:
+                source_counts: Counter[str] = Counter(sr.source for sr in mkt.search_results)
+                source_parts = ", ".join(
+                    f"{src}: {cnt}" for src, cnt in source_counts.most_common()
+                )
+                out(
+                    f"\n  Sources: {len(mkt.search_results)} results "
+                    f"from {len(source_counts)} APIs ({source_parts})"
+                )
+                if full:
+                    out("")
+                    for sr in mkt.search_results:
+                        score_str = f" [{sr.relevance_score:.1f}]" if sr.relevance_score else ""
+                        out(f"    [{sr.source}]{score_str} {sr.title}")
+                        out(f"      {sr.url}")
+                        if sr.snippet:
+                            out(f"      {_trunc_str(sr.snippet, 120)}")
+
+        # --- SCORING section ---
+        if score:
+            decision_str = score.decision.value.upper()
+            out(f"\n  SCORING \u2014 {score.total_score}/100 \u2192 {decision_str}")
+            out(f"  {_SINGLE_LINE}")
+
+            if score.components:
+                for sc in score.components:
+                    reasoning_str = ""
+                    if sc.reasoning:
+                        r = sc.reasoning if full else _trunc_str(sc.reasoning, 60)
+                        reasoning_str = f' \u2014 "{r}"'
+                    out(
+                        f"    {sc.name:<24s}{sc.score:>3d}/100  "
+                        f"(\u00d7{sc.weight:.2f}){reasoning_str}"
+                    )
+
+            if score.reasoning:
+                out("\n  Reasoning")
+                text = score.reasoning if full else _trunc_str(score.reasoning, 300)
+                for line in text.splitlines():
+                    out(f"    {line}")
+
+            if score.risks:
+                out(f"\n  Risks ({len(score.risks)})")
+                for r in score.risks:
+                    out(f"    \u2022 {r}")
+
+            if score.opportunities:
+                out(f"\n  Opportunities ({len(score.opportunities)})")
+                for o in score.opportunities:
+                    out(f"    \u2022 {o}")
+
+        # --- Footer ---
+        out(f"\n  {_DOUBLE_LINE}\n")
+
+        if not mkt and not score:
+            out("  Hint: run the pipeline further to generate research and scoring data.")
+            out(f"    verdandi run {experiment_id}\n")
+
+    finally:
+        db.close()
+
+
 @cli.command()
 @click.argument("experiment_id", type=int)
 @click.option("--approve", is_flag=True, help="Approve the experiment")
