@@ -15,9 +15,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from verdandi.clients.exa import ExaSearchResult
 from verdandi.clients.hn_algolia import HNComment, HNStory
-from verdandi.clients.perplexity import PerplexityResult
+from verdandi.clients.perplexity import PerplexityDeepResult, PerplexityResult
 from verdandi.clients.serper import SerperRedditResult, SerperResult
-from verdandi.clients.tavily import TavilySearchResult
+from verdandi.clients.tavily import TavilyResearchResult, TavilySearchResult
 
 if TYPE_CHECKING:
     from verdandi.cache import ResearchCache
@@ -32,10 +32,12 @@ class RawResearchData(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     tavily_results: list[TavilySearchResult] = Field(default_factory=list)
+    tavily_research: TavilyResearchResult | None = None
     serper_results: list[SerperResult] = Field(default_factory=list)
     serper_reddit: list[SerperRedditResult] = Field(default_factory=list)
     exa_results: list[ExaSearchResult] = Field(default_factory=list)
     perplexity_answer: PerplexityResult | None = None
+    perplexity_deep_answer: PerplexityDeepResult | None = None
     hn_stories: list[HNStory] = Field(default_factory=list)
     hn_comments: list[HNComment] = Field(default_factory=list)
     sources_used: list[str] = Field(default_factory=list)
@@ -46,6 +48,7 @@ class RawResearchData(BaseModel):
         """Check if any source returned data."""
         return bool(
             self.tavily_results
+            or self.tavily_research
             or self.serper_results
             or self.serper_reddit
             or self.exa_results
@@ -112,6 +115,8 @@ class ResearchCollector:
         include_hn_comments: bool = True,
         perplexity_question: str = "",
         exa_similar_url: str = "",
+        tavily_research_query: str = "",
+        use_perplexity_deep: bool = False,
     ) -> RawResearchData:
         """Collect research data from all available APIs.
 
@@ -121,6 +126,10 @@ class ResearchCollector:
             include_hn_comments: Whether to search HN comments.
             perplexity_question: Optional synthesized question for Perplexity.
             exa_similar_url: Optional URL for Exa's find_similar.
+            tavily_research_query: Optional query for Tavily's multi-step
+                deep research mode (returns summary + sources + follow-ups).
+            use_perplexity_deep: If True, use Perplexity Deep Research
+                (sonar-deep-research) instead of basic sonar for richer analysis.
 
         Returns:
             RawResearchData with results from all sources that responded.
@@ -166,6 +175,24 @@ class ResearchCollector:
                 sources_used.append("tavily")
         else:
             logger.debug("Tavily not configured, skipping")
+
+        # --- Tavily Research: multi-step deep research ---
+        tavily_research: TavilyResearchResult | None = None
+        if tavily.is_available and tavily_research_query:
+            cached_json = self._check_cache("tavily_research", tavily_research_query)
+            if cached_json is not None:
+                tavily_research = json.loads(cached_json)
+            else:
+                try:
+                    tavily_research = tavily.research(tavily_research_query)
+                    self._save_cache(
+                        "tavily_research", tavily_research_query, json.dumps(tavily_research)
+                    )
+                except Exception as exc:
+                    errors.append(f"Tavily research failed: {exc}")
+                    logger.warning("Tavily research failed", error=str(exc))
+            if tavily_research and "tavily" not in sources_used:
+                sources_used.append("tavily")
 
         # --- Serper: Google SERP data + Reddit ---
         serper = SerperClient(api_key=self.settings.serper_api_key)
@@ -252,22 +279,35 @@ class ResearchCollector:
 
         # --- Perplexity: synthesized answer with citations ---
         perplexity = PerplexityClient(api_key=self.settings.perplexity_api_key)
+        perplexity_deep_answer: PerplexityDeepResult | None = None
         if perplexity.is_available and perplexity_question:
-            cached_json = self._check_cache("perplexity", perplexity_question)
+            cache_key = (
+                f"perplexity_deep:{perplexity_question}"
+                if use_perplexity_deep
+                else perplexity_question
+            )
+            cached_json = self._check_cache("perplexity", cache_key)
             if cached_json is not None:
-                cached_pplx: PerplexityResult = json.loads(cached_json)
-                perplexity_answer = cached_pplx
+                if use_perplexity_deep:
+                    perplexity_deep_answer = json.loads(cached_json)
+                    perplexity_answer = perplexity_deep_answer
+                else:
+                    cached_pplx: PerplexityResult = json.loads(cached_json)
+                    perplexity_answer = cached_pplx
                 sources_used.append("perplexity")
             else:
                 try:
-                    perplexity_answer = perplexity.query(perplexity_question)
+                    if use_perplexity_deep:
+                        perplexity_deep_answer = perplexity.deep_research(perplexity_question)
+                        perplexity_answer = perplexity_deep_answer
+                    else:
+                        perplexity_answer = perplexity.query(perplexity_question)
                     sources_used.append("perplexity")
-                    self._save_cache(
-                        "perplexity", perplexity_question, json.dumps(perplexity_answer)
-                    )
+                    self._save_cache("perplexity", cache_key, json.dumps(perplexity_answer))
                 except Exception as exc:
-                    errors.append(f"Perplexity query failed: {exc}")
-                    logger.warning("Perplexity query failed", error=str(exc))
+                    mode = "deep_research" if use_perplexity_deep else "query"
+                    errors.append(f"Perplexity {mode} failed: {exc}")
+                    logger.warning(f"Perplexity {mode} failed", error=str(exc))
         elif not perplexity_question:
             logger.debug("No Perplexity question provided, skipping")
         else:
@@ -308,10 +348,12 @@ class ResearchCollector:
 
         raw = RawResearchData(
             tavily_results=tavily_results,
+            tavily_research=tavily_research,
             serper_results=serper_results,
             serper_reddit=serper_reddit,
             exa_results=exa_results,
             perplexity_answer=perplexity_answer,
+            perplexity_deep_answer=perplexity_deep_answer,
             hn_stories=hn_stories,
             hn_comments=hn_comments,
             sources_used=sources_used,
@@ -353,6 +395,20 @@ def format_research_context(raw: RawResearchData) -> str:
             lines.append(f"  {tr['content'][:300]}")
         sections.append("\n".join(lines))
 
+    # Tavily deep research
+    if raw.tavily_research:
+        lines = ["## Deep Research Summary (Tavily Research)"]
+        lines.append(raw.tavily_research["summary"])
+        if raw.tavily_research["sources"]:
+            lines.append("\nSources:")
+            for src in raw.tavily_research["sources"]:
+                lines.append(f"  - {src['title']} ({src['url']}) [relevance: {src['relevance']}]")
+        if raw.tavily_research["follow_up_questions"]:
+            lines.append("\nSuggested follow-up questions:")
+            for q in raw.tavily_research["follow_up_questions"]:
+                lines.append(f"  - {q}")
+        sections.append("\n".join(lines))
+
     # Serper SERP results
     if raw.serper_results:
         lines = ["## Google SERP Results (Serper)"]
@@ -379,8 +435,17 @@ def format_research_context(raw: RawResearchData) -> str:
                 lines.append(f"  {exa_text[:300]}")
         sections.append("\n".join(lines))
 
-    # Perplexity synthesis
-    if raw.perplexity_answer:
+    # Perplexity synthesis (deep research takes priority over basic)
+    if raw.perplexity_deep_answer:
+        lines = ["## AI Deep Research (Perplexity Deep Research)"]
+        lines.append(raw.perplexity_deep_answer["answer"])
+        lines.append(f"\n(Analyzed {raw.perplexity_deep_answer['sources_analyzed']} sources)")
+        if raw.perplexity_deep_answer["citations"]:
+            lines.append("\nCitations:")
+            for citation_url in raw.perplexity_deep_answer["citations"]:
+                lines.append(f"  - {citation_url}")
+        sections.append("\n".join(lines))
+    elif raw.perplexity_answer:
         lines = ["## AI-Synthesized Research (Perplexity)"]
         lines.append(raw.perplexity_answer["answer"])
         if raw.perplexity_answer["citations"]:

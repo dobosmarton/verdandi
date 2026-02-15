@@ -90,6 +90,12 @@ class DeepResearchStep(AbstractStep):
                 "Who are the main competitors and what gaps exist?"
             ),
             exa_similar_url="",
+            tavily_research_query=(
+                f"Market analysis for {idea.title}: "
+                f"TAM, competitors, gaps, and growth trajectory "
+                f"in {idea.category}"
+            ),
+            use_perplexity_deep=True,
         )
 
         # Accumulate and deduplicate via ResearchSession
