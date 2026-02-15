@@ -1,7 +1,12 @@
-"""LLM client wrapper using PydanticAI + Anthropic."""
+"""LLM client wrapper using PydanticAI + Anthropic.
+
+Uses streaming by default to prevent network idle-timeout disconnections
+on long-running requests (e.g., complex structured outputs).
+"""
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, TypeVar
 
 import structlog
@@ -12,11 +17,47 @@ from verdandi.config import Settings
 from verdandi.metrics import llm_tokens_total
 
 if TYPE_CHECKING:
+    from pydantic_ai import Agent
     from pydantic_ai.models.anthropic import AnthropicModel
+    from pydantic_ai.usage import RunUsage
 
 logger = structlog.get_logger()
 
 T = TypeVar("T", bound=BaseModel)
+# Unbounded TypeVar for the streaming helper (must accept both BaseModel and str)
+_OutputT = TypeVar("_OutputT")
+
+
+def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
+    """Get the running event loop or create a new one."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
+async def _run_streamed(
+    agent: Agent[None, _OutputT],
+    prompt: str,
+    model_settings: AnthropicModelSettings,
+) -> tuple[_OutputT, RunUsage]:
+    """Run a PydanticAI agent in streaming mode and return the final output.
+
+    Streaming keeps the TCP connection alive with continuous data flow,
+    preventing network-level idle timeouts (~60s on some NAT/routers).
+    """
+    async with agent.run_stream(prompt, model_settings=model_settings) as stream:
+        # Consume the stream — this forces data to flow continuously
+        async for _chunk in stream.stream_output():
+            pass
+        output: _OutputT = await stream.get_output()
+        return output, stream.usage()
 
 
 class LLMClient:
@@ -53,6 +94,33 @@ class LLMClient:
             anthropic_cache_instructions=True,
         )
 
+    def _log_and_record_usage(self, output_type: str, usage: RunUsage) -> None:
+        """Log LLM usage and record Prometheus token counters."""
+        logger.info(
+            "LLM response",
+            model=self.settings.llm_model,
+            output_type=output_type,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            cache_read_tokens=usage.cache_read_tokens or 0,
+            cache_write_tokens=usage.cache_write_tokens or 0,
+        )
+
+        model_label = self.settings.llm_model
+        llm_tokens_total.labels(model=model_label, token_type="request").inc(
+            usage.input_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="response").inc(
+            usage.output_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="cache_read").inc(
+            usage.cache_read_tokens or 0
+        )
+        llm_tokens_total.labels(model=model_label, token_type="cache_write").inc(
+            usage.cache_write_tokens or 0
+        )
+
     def generate(
         self,
         prompt: str,
@@ -61,10 +129,14 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> T:
-        """Generate a structured response using Claude + PydanticAI."""
+        """Generate a structured response using Claude + PydanticAI.
+
+        Uses streaming to keep the TCP connection alive and prevent
+        network-level idle timeouts from killing long-running requests.
+        """
         from pydantic_ai import Agent
 
-        agent = Agent(
+        agent: Agent[None, T] = Agent(
             self.model,
             output_type=response_model,
             system_prompt=system or "You are a helpful assistant.",
@@ -76,39 +148,14 @@ class LLMClient:
             "LLM request",
             model=self.settings.llm_model,
             response_model=response_model.__name__,
+            streaming=True,
         )
 
-        result = agent.run_sync(prompt, model_settings=model_settings)
+        loop = _get_or_create_event_loop()
+        output, usage = loop.run_until_complete(_run_streamed(agent, prompt, model_settings))
 
-        # Log usage for cost tracking
-        usage = result.usage()
-        logger.info(
-            "LLM response",
-            model=self.settings.llm_model,
-            output_type=response_model.__name__,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
-            cache_read_tokens=usage.cache_read_tokens or 0,
-            cache_write_tokens=usage.cache_write_tokens or 0,
-        )
-
-        # Record Prometheus token counters
-        model_label = self.settings.llm_model
-        llm_tokens_total.labels(model=model_label, token_type="request").inc(
-            usage.input_tokens or 0
-        )
-        llm_tokens_total.labels(model=model_label, token_type="response").inc(
-            usage.output_tokens or 0
-        )
-        llm_tokens_total.labels(model=model_label, token_type="cache_read").inc(
-            usage.cache_read_tokens or 0
-        )
-        llm_tokens_total.labels(model=model_label, token_type="cache_write").inc(
-            usage.cache_write_tokens or 0
-        )
-
-        return result.output
+        self._log_and_record_usage(response_model.__name__, usage)
+        return output
 
     def generate_text(
         self,
@@ -117,10 +164,13 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
-        """Generate plain text response (no structured output)."""
+        """Generate plain text response (no structured output).
+
+        Uses streaming to keep the TCP connection alive.
+        """
         from pydantic_ai import Agent
 
-        agent = Agent(
+        agent: Agent[None, str] = Agent(
             self.model,
             output_type=str,
             system_prompt=system or "You are a helpful assistant.",
@@ -128,36 +178,18 @@ class LLMClient:
 
         model_settings = self._build_model_settings(temperature, max_tokens)
 
-        result = agent.run_sync(prompt, model_settings=model_settings)
-
-        usage = result.usage()
-        logger.info(
-            "LLM response",
+        logger.debug(
+            "LLM request",
             model=self.settings.llm_model,
-            output_type="str",
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
-            cache_read_tokens=usage.cache_read_tokens or 0,
-            cache_write_tokens=usage.cache_write_tokens or 0,
+            response_model="str",
+            streaming=True,
         )
 
-        # Record Prometheus token counters
-        model_label = self.settings.llm_model
-        llm_tokens_total.labels(model=model_label, token_type="request").inc(
-            usage.input_tokens or 0
-        )
-        llm_tokens_total.labels(model=model_label, token_type="response").inc(
-            usage.output_tokens or 0
-        )
-        llm_tokens_total.labels(model=model_label, token_type="cache_read").inc(
-            usage.cache_read_tokens or 0
-        )
-        llm_tokens_total.labels(model=model_label, token_type="cache_write").inc(
-            usage.cache_write_tokens or 0
-        )
+        loop = _get_or_create_event_loop()
+        output, usage = loop.run_until_complete(_run_streamed(agent, prompt, model_settings))
 
-        return result.output
+        self._log_and_record_usage("str", usage)
+        return output
 
     @property
     def is_available(self) -> bool:
