@@ -29,8 +29,13 @@ Results are checkpointed to SQLite after every step, so the pipeline can resume 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  CLI (Click)          │  API (FastAPI + Uvicorn)    │
+              Local                          Remote
+┌──────────────────────┐        ┌──────────────────────────────┐
+│  CLI (Click)         │───or──▶│  CLI ──(httpx)──▶ API Server │
+│  ├─ Database (local) │        │                              │
+│  └─ ApiClient (http) │        └──────────────────────────────┘
+├──────────────────────┴──────────────────────────────┐
+│  API Server (FastAPI + Uvicorn)                     │
 ├─────────────────────────────────────────────────────┤
 │              PipelineRunner (orchestrator)           │
 │         Step Registry  ·  Retry + Circuit Breaker   │
@@ -168,6 +173,7 @@ All configuration is via environment variables (loaded from `.env`):
 | `LLM_MAX_TOKENS` | `4096` | Max output tokens per LLM call |
 | `LLM_TEMPERATURE` | `0.7` | LLM temperature |
 | `DATA_DIR` | `./data` | Directory for SQLite databases |
+| `VERDANDI_API_URL` | *(empty)* | Remote API URL — if set, CLI talks to HTTP instead of local SQLite |
 
 ### Monitoring Thresholds
 
@@ -189,6 +195,7 @@ verdandi ls [--status STATUS]               # List experiments
 verdandi inspect <ID>                       # Show experiment summary + completed steps
 verdandi inspect <ID> --step scoring        # Show specific step result as JSON
 verdandi inspect <ID> --log                 # Show pipeline execution log
+verdandi report <ID>                        # Show structured research report
 verdandi review <ID> --approve [--notes ""] # Approve experiment for deployment
 verdandi review <ID> --reject [--notes ""]  # Reject experiment
 verdandi monitor [--all-live]               # Show running experiments
@@ -202,6 +209,7 @@ verdandi enqueue run <ID> [--dry-run]       # Enqueue pipeline run to worker
 ```
 
 Add `-v` / `--verbose` to any command for debug-level logging.
+Add `--remote <URL>` to any command to target a remote API server (see [Remote Mode](#remote-mode)).
 
 ## REST API
 
@@ -226,6 +234,8 @@ All endpoints are under `/api/v1`:
 |--------|------|-------------|
 | `GET` | `/experiments` | List experiments (optional `?status=pending`) |
 | `GET` | `/experiments/{id}` | Get experiment details |
+| `GET` | `/experiments/{id}/report` | Structured research report (idea + market + scoring) |
+| `POST` | `/experiments/{id}/archive` | Archive an experiment |
 
 ### Steps & Logs
 | Method | Path | Description |
@@ -251,6 +261,67 @@ All endpoints are under `/api/v1`:
 |--------|------|-------------|
 | `GET` | `/reservations` | List topic reservations |
 | `DELETE` | `/reservations/{id}` | Release a reservation |
+
+## Remote Mode
+
+When Verdandi runs on a remote server, you can use the same CLI commands from your local machine without SSH. The CLI transparently switches between local SQLite access and HTTP calls to the remote API.
+
+### Setup
+
+**Option 1: Environment variable** (persistent)
+
+```bash
+# In your local .env or shell profile
+export VERDANDI_API_URL=http://your-server:8000
+verdandi ls
+```
+
+**Option 2: CLI flag** (one-off)
+
+```bash
+verdandi --remote http://your-server:8000 ls
+verdandi --remote http://your-server:8000 report 4
+verdandi --remote http://your-server:8000 review 2 --approve
+```
+
+The `--remote` flag takes precedence over the env var. If neither is set, the CLI uses local SQLite (default behavior, no change needed).
+
+### How It Works
+
+Both `Database` (local) and `ApiClient` (remote) implement the `CliBackend` protocol — a narrow 8-method interface covering reads, reviews, and archiving. The CLI calls `_get_backend()` which returns whichever implementation matches the current mode. Commands like `ls`, `inspect`, `report`, `review`, and `archive` work identically in both modes.
+
+### Command Availability
+
+| Category | Commands | Remote | Local |
+|----------|----------|--------|-------|
+| Read-only | `ls`, `inspect`, `monitor`, `report` | Yes | Yes |
+| Write | `review`, `archive` | Yes | Yes |
+| Actions | `discover`, `run`, `research` | Yes (enqueues on server) | Yes |
+| Config | `check`, `reservations` | Yes | Yes |
+| Local-only | `worker`, `cache`, `enqueue`, `serve` | No | Yes |
+
+Commands marked "Local-only" will print an error if used in remote mode:
+
+```
+Error: 'worker' is not available in remote mode.
+```
+
+### Typical Workflow
+
+```bash
+# On your server: start the API + worker
+verdandi serve --host 0.0.0.0 &
+verdandi worker --workers 4 &
+
+# On your local machine: interact remotely
+export VERDANDI_API_URL=http://your-server:8000
+
+verdandi discover --max-ideas 3        # Triggers discovery on the server
+verdandi ls                            # Lists experiments from the server DB
+verdandi report 2                      # Shows research report
+verdandi review 2 --approve            # Approves experiment remotely
+verdandi run 2                         # Triggers pipeline run on the server
+```
 
 ## Pipeline Models
 

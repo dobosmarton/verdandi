@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
 
+    # Remote API (if set, CLI talks to HTTP instead of local SQLite)
+    api_url: str = ""  # e.g. "http://10.0.0.5:8000"
+
     # Huey settings
     huey_workers: int = 4
     huey_immediate: bool = False

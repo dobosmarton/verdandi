@@ -57,6 +57,30 @@ class DatabasePort(Protocol):
 
 
 @runtime_checkable
+class CliBackend(Protocol):
+    """Narrow interface for CLI commands — satisfied by both Database and ApiClient.
+
+    A strict subset of DatabasePort: only the read/write methods that CLI
+    commands actually use. Database satisfies this structurally (no adapter).
+    """
+
+    def get_experiment(self, experiment_id: int) -> Experiment | None: ...
+    def list_experiments(self, status: ExperimentStatus | None = None) -> list[Experiment]: ...
+    def get_step_result(self, experiment_id: int, step_name: str) -> StepResultDict | None: ...
+    def get_all_step_results(self, experiment_id: int) -> list[StepResultDict]: ...
+    def get_log(self, experiment_id: int) -> list[LogEntryDict]: ...
+    def update_experiment_review(
+        self,
+        experiment_id: int,
+        approved: bool,
+        reviewed_by: str = "cli",
+        notes: str = "",
+    ) -> None: ...
+    def archive_experiment(self, experiment_id: int) -> None: ...
+    def close(self) -> None: ...
+
+
+@runtime_checkable
 class LLMPort(Protocol):
     """Interface for LLM text/structured generation."""
 

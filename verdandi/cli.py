@@ -14,6 +14,7 @@ from verdandi.logging import configure_logging
 
 if TYPE_CHECKING:
     from verdandi.memory.long_term import LongTermMemory
+    from verdandi.protocols import CliBackend
 
 
 def _get_db(settings: Settings) -> Database:
@@ -21,6 +22,28 @@ def _get_db(settings: Settings) -> Database:
     db = Database(settings.db_path)
     db.init_schema()
     return db
+
+
+def _get_backend(settings: Settings, remote_url: str | None = None) -> CliBackend:
+    """Return ApiClient if remote URL configured, else local Database."""
+    url = remote_url or settings.api_url
+    if url:
+        from verdandi.api.client import ApiClient
+
+        return ApiClient(url)
+    return _get_db(settings)
+
+
+def _is_remote(ctx: click.Context) -> bool:
+    """Check if we're in remote mode."""
+    return bool(ctx.obj.get("remote_url"))
+
+
+def _require_local(ctx: click.Context, command_name: str) -> None:
+    """Exit with error if in remote mode for a local-only command."""
+    if _is_remote(ctx):
+        click.echo(f"Error: '{command_name}' is not available in remote mode.", err=True)
+        sys.exit(1)
 
 
 def _get_ltm(settings: Settings) -> LongTermMemory | None:
@@ -34,8 +57,14 @@ def _get_ltm(settings: Settings) -> LongTermMemory | None:
 
 @click.group()
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging")
+@click.option(
+    "--remote",
+    type=str,
+    default=None,
+    help="Remote API URL (e.g. http://server:8000)",
+)
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool) -> None:
+def cli(ctx: click.Context, verbose: bool, remote: str | None) -> None:
     """Verdandi — autonomous product validation factory."""
     ctx.ensure_object(dict)
     settings = Settings()
@@ -43,6 +72,7 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     configure_logging(log_level=log_level, log_format=settings.log_format)
     ctx.obj["settings"] = settings
     ctx.obj["verbose"] = verbose
+    ctx.obj["remote_url"] = remote or settings.api_url or None
 
 
 @cli.command()
@@ -57,6 +87,23 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.pass_context
 def discover(ctx: click.Context, max_ideas: int, strategy: str, dry_run: bool) -> None:
     """Discover new product ideas."""
+    if _is_remote(ctx):
+        from verdandi.api.client import ApiClient, handle_remote_errors
+
+        client = ApiClient(ctx.obj["remote_url"])
+        try:
+            with handle_remote_errors():
+                strat = strategy if strategy != "auto" else None
+                result = client.trigger_discover(
+                    max_ideas=max_ideas, dry_run=dry_run, strategy=strat
+                )
+                click.echo(f"Discovery triggered: {result['message']}")
+                if result.get("task_id"):
+                    click.echo(f"Task ID: {result['task_id']}")
+        finally:
+            client.close()
+        return
+
     from verdandi.orchestrator import PipelineRunner
 
     strategy_override = None
@@ -97,6 +144,27 @@ def run(
     dry_run: bool,
 ) -> None:
     """Run the pipeline for an experiment."""
+    if _is_remote(ctx):
+        from verdandi.api.client import ApiClient, handle_remote_errors
+
+        if experiment_id is None:
+            click.echo("Error: provide an experiment ID for remote runs", err=True)
+            sys.exit(1)
+        client = ApiClient(ctx.obj["remote_url"])
+        try:
+            with handle_remote_errors():
+                result = client.trigger_run(
+                    experiment_id=experiment_id,
+                    dry_run=dry_run,
+                    stop_after=stop_after,
+                )
+                click.echo(f"Pipeline triggered: {result['message']}")
+                if result.get("task_id"):
+                    click.echo(f"Task ID: {result['task_id']}")
+        finally:
+            client.close()
+        return
+
     from verdandi.orchestrator import PipelineRunner
 
     settings = ctx.obj["settings"]
@@ -122,6 +190,23 @@ def run(
 @click.pass_context
 def research(ctx: click.Context, max_ideas: int, dry_run: bool) -> None:
     """Discover ideas, research them, and score GO/NO_GO (stops at Step 2)."""
+    if _is_remote(ctx):
+        from verdandi.api.client import ApiClient, handle_remote_errors
+
+        client = ApiClient(ctx.obj["remote_url"])
+        try:
+            with handle_remote_errors():
+                click.echo(f"Triggering discovery of {max_ideas} ideas on remote server...")
+                result = client.trigger_discover(max_ideas=max_ideas, dry_run=dry_run)
+                click.echo(f"Discovery triggered: {result['message']}")
+                click.echo(
+                    "Note: remote research runs asynchronously. "
+                    "Use 'verdandi ls' to check progress."
+                )
+        finally:
+            client.close()
+        return
+
     from verdandi.orchestrator import PipelineRunner
 
     settings = ctx.obj["settings"]
@@ -162,10 +247,10 @@ def list_experiments(ctx: click.Context, status: str | None) -> None:
     from verdandi.models.experiment import ExperimentStatus
 
     settings = ctx.obj["settings"]
-    db = _get_db(settings)
+    backend = _get_backend(settings, ctx.obj.get("remote_url"))
     try:
         exp_status = ExperimentStatus(status) if status else None
-        experiments = db.list_experiments(exp_status)
+        experiments = backend.list_experiments(exp_status)
         if not experiments:
             click.echo("No experiments found.")
             return
@@ -174,7 +259,7 @@ def list_experiments(ctx: click.Context, status: str | None) -> None:
                 f"  [{exp.id}] {exp.status.value:16s} {exp.idea_title} (step {exp.current_step})"
             )
     finally:
-        db.close()
+        backend.close()
 
 
 @cli.command()
@@ -185,9 +270,9 @@ def list_experiments(ctx: click.Context, status: str | None) -> None:
 def inspect(ctx: click.Context, experiment_id: int, step: str | None, show_log: bool) -> None:
     """Inspect an experiment's results."""
     settings = ctx.obj["settings"]
-    db = _get_db(settings)
+    backend = _get_backend(settings, ctx.obj.get("remote_url"))
     try:
-        exp = db.get_experiment(experiment_id)
+        exp = backend.get_experiment(experiment_id)
         if exp is None:
             click.echo(f"Experiment {experiment_id} not found.", err=True)
             sys.exit(1)
@@ -199,23 +284,23 @@ def inspect(ctx: click.Context, experiment_id: int, step: str | None, show_log: 
 
         if show_log:
             click.echo("\nPipeline Log:")
-            for entry in db.get_log(experiment_id):
+            for entry in backend.get_log(experiment_id):
                 click.echo(f"  [{entry['created_at']}] {entry['event']}: {entry['message']}")
         elif step:
-            result = db.get_step_result(experiment_id, step)
+            result = backend.get_step_result(experiment_id, step)
             if result:
                 click.echo(f"\nStep '{step}' result:")
                 click.echo(json.dumps(result["data"], indent=2))
             else:
                 click.echo(f"No result for step '{step}'")
         else:
-            results = db.get_all_step_results(experiment_id)
+            results = backend.get_all_step_results(experiment_id)
             if results:
                 click.echo("\nCompleted steps:")
                 for r in results:
                     click.echo(f"  Step {r['step_number']}: {r['step_name']}")
     finally:
-        db.close()
+        backend.close()
 
 
 def _trunc(items: list[str], limit: int, full: bool) -> list[str]:
@@ -249,16 +334,16 @@ def report(ctx: click.Context, experiment_id: int, full: bool) -> None:
     from verdandi.models.scoring import PreBuildScore
 
     settings = ctx.obj["settings"]
-    db = _get_db(settings)
+    backend = _get_backend(settings, ctx.obj.get("remote_url"))
     try:
-        exp = db.get_experiment(experiment_id)
+        exp = backend.get_experiment(experiment_id)
         if exp is None:
             click.echo(f"Experiment {experiment_id} not found.", err=True)
             sys.exit(1)
 
-        idea_result = db.get_step_result(experiment_id, "idea_discovery")
-        research_result = db.get_step_result(experiment_id, "deep_research")
-        scoring_result = db.get_step_result(experiment_id, "scoring")
+        idea_result = backend.get_step_result(experiment_id, "idea_discovery")
+        research_result = backend.get_step_result(experiment_id, "deep_research")
+        scoring_result = backend.get_step_result(experiment_id, "scoring")
 
         idea = (
             IdeaCandidate(**idea_result["data"])
@@ -443,7 +528,7 @@ def report(ctx: click.Context, experiment_id: int, full: bool) -> None:
             out(f"    verdandi run {experiment_id}\n")
 
     finally:
-        db.close()
+        backend.close()
 
 
 @cli.command()
@@ -462,18 +547,18 @@ def review(ctx: click.Context, experiment_id: int, approve: bool, reject: bool, 
         sys.exit(1)
 
     settings = ctx.obj["settings"]
-    db = _get_db(settings)
+    backend = _get_backend(settings, ctx.obj.get("remote_url"))
     try:
-        exp = db.get_experiment(experiment_id)
+        exp = backend.get_experiment(experiment_id)
         if exp is None:
             click.echo(f"Experiment {experiment_id} not found.", err=True)
             sys.exit(1)
 
-        db.update_experiment_review(experiment_id, approved=approve, notes=notes)
+        backend.update_experiment_review(experiment_id, approved=approve, notes=notes)
         action = "approved" if approve else "rejected"
         click.echo(f"Experiment {experiment_id} {action}.")
     finally:
-        db.close()
+        backend.close()
 
 
 @cli.command()
@@ -484,16 +569,16 @@ def monitor(ctx: click.Context, all_live: bool) -> None:
     from verdandi.models.experiment import ExperimentStatus
 
     settings = ctx.obj["settings"]
-    db = _get_db(settings)
+    backend = _get_backend(settings, ctx.obj.get("remote_url"))
     try:
-        experiments = db.list_experiments(ExperimentStatus.RUNNING)
+        experiments = backend.list_experiments(ExperimentStatus.RUNNING)
         if not experiments:
             click.echo("No running experiments.")
             return
         for exp in experiments:
             click.echo(f"  [{exp.id}] {exp.idea_title} — step {exp.current_step}")
     finally:
-        db.close()
+        backend.close()
 
 
 @cli.command()
@@ -502,18 +587,33 @@ def monitor(ctx: click.Context, all_live: bool) -> None:
 def archive(ctx: click.Context, experiment_id: int) -> None:
     """Archive an experiment."""
     settings = ctx.obj["settings"]
-    db = _get_db(settings)
+    backend = _get_backend(settings, ctx.obj.get("remote_url"))
     try:
-        db.archive_experiment(experiment_id)
+        backend.archive_experiment(experiment_id)
         click.echo(f"Experiment {experiment_id} archived.")
     finally:
-        db.close()
+        backend.close()
 
 
 @cli.command()
 @click.pass_context
 def check(ctx: click.Context) -> None:
     """Verify which API keys are configured."""
+    if _is_remote(ctx):
+        from verdandi.api.client import ApiClient, handle_remote_errors
+
+        client = ApiClient(ctx.obj["remote_url"])
+        try:
+            with handle_remote_errors():
+                click.echo(f"  Remote server: {ctx.obj['remote_url']}")
+                keys = client.config_check()
+                for name, configured in sorted(keys.items()):
+                    status = "OK" if configured else "-- not set"
+                    click.echo(f"  {name:16s} {status}")
+        finally:
+            client.close()
+        return
+
     settings = ctx.obj["settings"]
     keys = {
         "Anthropic": bool(settings.anthropic_api_key),
@@ -536,8 +636,10 @@ def check(ctx: click.Context) -> None:
 
 
 @cli.group()
-def cache() -> None:
+@click.pass_context
+def cache(ctx: click.Context) -> None:
     """Manage the research data cache (Redis)."""
+    _require_local(ctx, "cache")
 
 
 @cache.command("ping")
@@ -609,6 +711,7 @@ def cache_purge(ctx: click.Context) -> None:
 @click.pass_context
 def worker(ctx: click.Context, workers: int) -> None:
     """Start Huey worker consumer."""
+    _require_local(ctx, "worker")
     from verdandi.orchestrator.scheduler import huey
 
     click.echo(f"Starting Huey consumer with {workers} workers...")
@@ -617,8 +720,10 @@ def worker(ctx: click.Context, workers: int) -> None:
 
 
 @cli.group()
-def enqueue() -> None:
+@click.pass_context
+def enqueue(ctx: click.Context) -> None:
     """Enqueue tasks to the worker queue."""
+    _require_local(ctx, "enqueue")
 
 
 @enqueue.command("discover")
@@ -649,20 +754,39 @@ def enqueue_run(experiment_id: int, stop_after: int | None, dry_run: bool) -> No
 @click.pass_context
 def reservations(ctx: click.Context, active_only: bool) -> None:
     """Show topic reservations."""
+    if _is_remote(ctx):
+        from verdandi.api.client import ApiClient, handle_remote_errors
+
+        client = ApiClient(ctx.obj["remote_url"])
+        try:
+            with handle_remote_errors():
+                remote_rows = client.list_reservations(active_only=active_only)
+                if not remote_rows:
+                    click.echo("No reservations found.")
+                    return
+                for r in remote_rows:
+                    click.echo(
+                        f"  [{r['id']}] {r['topic_key']} — worker={r['worker_id']} "
+                        f"expires={r.get('expires_at', 'N/A')}"
+                    )
+        finally:
+            client.close()
+        return
+
     from verdandi.orchestrator.coordination import TopicReservationManager
 
     settings = ctx.obj["settings"]
     db = _get_db(settings)
     try:
         mgr = TopicReservationManager(db.Session)
-        rows = mgr.list_active() if active_only else mgr.list_all()
-        if not rows:
+        local_rows = mgr.list_active() if active_only else mgr.list_all()
+        if not local_rows:
             click.echo("No reservations found.")
             return
-        for r in rows:
+        for res in local_rows:
             click.echo(
-                f"  [{r['id']}] {r['topic_key']} — worker={r['worker_id']} "
-                f"expires={r.get('expires_at', 'N/A')}"
+                f"  [{res['id']}] {res['topic_key']} — worker={res['worker_id']} "
+                f"expires={res.get('expires_at', 'N/A')}"
             )
     finally:
         db.close()
@@ -674,6 +798,7 @@ def reservations(ctx: click.Context, active_only: bool) -> None:
 @click.pass_context
 def serve(ctx: click.Context, host: str | None, port: int | None) -> None:
     """Start the FastAPI API server."""
+    _require_local(ctx, "serve")
     import uvicorn
 
     settings = ctx.obj["settings"]

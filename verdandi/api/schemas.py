@@ -88,6 +88,94 @@ class ActionResponse(BaseModel):
     task_id: str | None = None
 
 
+# --- Report ---
+
+
+class ReportPainPoint(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    description: str
+    severity: int
+    frequency: str
+    source: str
+    quote: str = ""
+
+
+class ReportIdeaSection(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    title: str
+    one_liner: str
+    category: str
+    target_audience: str
+    problem_statement: str
+    novelty_score: float
+    discovery_type: str
+    pain_points: list[ReportPainPoint]
+    existing_solutions: list[str]
+    differentiation: str
+
+
+class ReportCompetitor(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    url: str = ""
+    description: str = ""
+    pricing: str = ""
+    strengths: list[str]
+    weaknesses: list[str]
+    estimated_users: str = ""
+    funding: str = ""
+
+
+class ReportMarketSection(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tam_estimate: str
+    market_growth: str
+    target_audience_size: str
+    willingness_to_pay: str
+    demand_signals: list[str]
+    key_findings: list[str]
+    common_complaints: list[str]
+    competitors: list[ReportCompetitor]
+    competitor_gaps: list[str]
+    research_summary: str
+    source_count: int
+    sources_by_api: dict[str, int]
+
+
+class ReportScoreComponent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    score: int
+    weight: float
+    reasoning: str = ""
+
+
+class ReportScoringSection(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    total_score: int
+    decision: str
+    reasoning: str = ""
+    components: list[ReportScoreComponent]
+    risks: list[str]
+    opportunities: list[str]
+
+
+class ReportResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    experiment_id: int
+    status: str
+    idea: ReportIdeaSection | None = None
+    market_research: ReportMarketSection | None = None
+    scoring: ReportScoringSection | None = None
+
+
 # --- Requests ---
 
 
@@ -104,6 +192,7 @@ class DiscoverRequest(BaseModel):
 
     max_ideas: int = Field(default=3, ge=1, le=20)
     dry_run: bool = False
+    strategy: str | None = None  # "disruption", "moonshot", or None for auto
 
 
 class RunPipelineRequest(BaseModel):
