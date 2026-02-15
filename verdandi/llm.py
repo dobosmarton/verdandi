@@ -28,20 +28,6 @@ T = TypeVar("T", bound=BaseModel)
 _OutputT = TypeVar("_OutputT")
 
 
-def _get_or_create_event_loop() -> asyncio.AbstractEventLoop:
-    """Get the running event loop or create a new one."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
-
-
 async def _run_streamed(
     agent: Agent[None, _OutputT],
     prompt: str,
@@ -151,8 +137,7 @@ class LLMClient:
             streaming=True,
         )
 
-        loop = _get_or_create_event_loop()
-        output, usage = loop.run_until_complete(_run_streamed(agent, prompt, model_settings))
+        output, usage = asyncio.run(_run_streamed(agent, prompt, model_settings))
 
         self._log_and_record_usage(response_model.__name__, usage)
         return output
@@ -185,8 +170,7 @@ class LLMClient:
             streaming=True,
         )
 
-        loop = _get_or_create_event_loop()
-        output, usage = loop.run_until_complete(_run_streamed(agent, prompt, model_settings))
+        output, usage = asyncio.run(_run_streamed(agent, prompt, model_settings))
 
         self._log_and_record_usage("str", usage)
         return output
