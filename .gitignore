@@ -24,3 +24,5 @@ data/
 !verdandi/templates/*.html
 
 .DS_Store
+
+.claude/settings.local.json
