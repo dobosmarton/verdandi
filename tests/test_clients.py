@@ -17,7 +17,8 @@ import respx
 from verdandi.clients.exa import ExaClient
 from verdandi.clients.hn_algolia import HNClient
 from verdandi.clients.perplexity import PerplexityClient
-from verdandi.clients.serper import SerperClient, _extract_subreddit
+from verdandi.clients.serper import SerperClient, _extract_subreddit, _extract_twitter_author
+from verdandi.clients.socialdata import SocialDataClient
 from verdandi.clients.tavily import TavilyClient
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -149,6 +150,77 @@ class TestSerperClient:
         assert _extract_subreddit("https://www.reddit.com/r/SaaS/comments/abc") == "SaaS"
         assert _extract_subreddit("https://www.reddit.com/r/startups/comments/def") == "startups"
         assert _extract_subreddit("https://example.com/not-reddit") == ""
+
+    @respx.mock
+    def test_search_twitter_parses_response(self) -> None:
+        fixture = _load_fixture("serper_twitter.json")
+        respx.post("https://google.serper.dev/search").mock(
+            return_value=httpx.Response(200, json=fixture)
+        )
+
+        client = SerperClient(api_key="serper-test-key")
+        results = client.search_twitter("changelog automation")
+
+        assert len(results) == 2
+        assert results[0]["author"] == "devfounder"
+        assert "x.com" in results[0]["link"]
+
+    def test_search_twitter_mock_fallback(self) -> None:
+        client = SerperClient(api_key="")
+        results = client.search_twitter("test")
+        assert len(results) > 0
+        assert results[0]["author"] == "devfounder"
+
+    def test_extract_twitter_author(self) -> None:
+        assert _extract_twitter_author("https://x.com/devfounder/status/123") == "devfounder"
+        assert _extract_twitter_author("https://twitter.com/user/status/456") == "user"
+        assert _extract_twitter_author("https://www.x.com/someone/status/789") == "someone"
+        assert _extract_twitter_author("https://example.com/not-twitter") == ""
+        assert _extract_twitter_author("https://x.com") == ""
+
+
+# =====================================================================
+# SocialData
+# =====================================================================
+
+
+class TestSocialDataClient:
+    def test_mock_fallback_no_api_key(self) -> None:
+        client = SocialDataClient(api_key="")
+        results = client.search("test query")
+        assert len(results) > 0
+        assert results[0]["author_username"] == "frustrated_founder"
+
+    @respx.mock
+    def test_search_parses_response(self) -> None:
+        fixture = _load_fixture("socialdata_search.json")
+        respx.get("https://api.socialdata.tools/twitter/search").mock(
+            return_value=httpx.Response(200, json=fixture)
+        )
+
+        client = SocialDataClient(api_key="sd-test-key")
+        results = client.search("changelog automation")
+
+        assert len(results) == 2
+        assert results[0]["tweet_id"] == "1800000000000000001"
+        assert results[0]["author_username"] == "dev_frustrated"
+        assert results[0]["author_followers"] == 3200
+        assert results[0]["favorite_count"] == 156
+        assert results[0]["views_count"] == 18500
+        assert results[0]["url"] == "https://x.com/dev_frustrated/status/1800000000000000001"
+
+    @respx.mock
+    def test_search_falls_back_on_error(self) -> None:
+        respx.get("https://api.socialdata.tools/twitter/search").mock(
+            return_value=httpx.Response(500, text="Server Error")
+        )
+        client = SocialDataClient(api_key="sd-test-key")
+        results = client.search("test")
+        assert len(results) > 0  # Falls back to mock
+
+    def test_is_available(self) -> None:
+        assert SocialDataClient(api_key="key").is_available is True
+        assert SocialDataClient(api_key="").is_available is False
 
 
 # =====================================================================

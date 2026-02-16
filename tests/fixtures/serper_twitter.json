@@ -1,0 +1,16 @@
+{
+  "organic": [
+    {
+      "title": "@devfounder: Changelog automation is broken...",
+      "link": "https://x.com/devfounder/status/1234567890",
+      "snippet": "I've tried every changelog tool on the market. None of them handle conventional commits properly.",
+      "position": 1
+    },
+    {
+      "title": "@saas_builder: The dev tools market needs disruption",
+      "link": "https://x.com/saas_builder/status/1234567891",
+      "snippet": "Hot take: developer experience tools are the next big category. Changelog automation is just the start.",
+      "position": 2
+    }
+  ]
+}

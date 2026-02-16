@@ -9,7 +9,12 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING
 
-from verdandi.clients.serper import SerperClient, SerperRedditResult, SerperResult
+from verdandi.clients.serper import (
+    SerperClient,
+    SerperRedditResult,
+    SerperResult,
+    SerperTwitterResult,
+)
 from verdandi.research import CollectionConfig, RawResearchData
 
 if TYPE_CHECKING:
@@ -39,6 +44,7 @@ class SerperProvider:
         client = SerperClient(api_key=self._api_key)
         results: list[SerperResult] = []
         reddit: list[SerperRedditResult] = []
+        twitter: list[SerperTwitterResult] = []
         errors: list[str] = []
 
         for q in config.queries[:2]:
@@ -64,9 +70,22 @@ class SerperProvider:
             if reddit_hits is not None:
                 reddit.extend(reddit_hits)
 
+        if config.include_twitter and config.primary_query:
+            pq = config.primary_query
+            twitter_hits = cached_call(
+                "serper_twitter_x",
+                pq,
+                lambda: client.search_twitter(pq),
+                errors,
+                label="Serper Twitter search",
+            )
+            if twitter_hits is not None:
+                twitter.extend(twitter_hits)
+
         return RawResearchData(
             serper_results=results,
             serper_reddit=reddit,
-            sources_used=["serper"] if results or reddit else [],
+            serper_twitter=twitter,
+            sources_used=["serper"] if results or reddit or twitter else [],
             errors=errors,
         )

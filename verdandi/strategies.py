@@ -43,6 +43,9 @@ class DiscoveryStrategy(BaseModel):
     # Source preferences
     prioritize_reddit: bool = Field(default=True, description="Whether to include Reddit searches")
     prioritize_hn: bool = Field(default=True, description="Whether to include HN comments")
+    prioritize_twitter: bool = Field(
+        default=True, description="Whether to include Twitter/X searches"
+    )
 
     # Scoring guidance (used by Step 2)
     scoring_guidance: str = Field(default="", description="Guidance appended to scoring prompt")

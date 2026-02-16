@@ -20,6 +20,7 @@ from verdandi.providers.exa import ExaProvider
 from verdandi.providers.hn import HNProvider
 from verdandi.providers.perplexity import PerplexityProvider
 from verdandi.providers.serper import SerperProvider
+from verdandi.providers.socialdata import SocialDataProvider
 from verdandi.providers.tavily import TavilyProvider
 from verdandi.research import CollectionConfig
 
@@ -32,6 +33,7 @@ def settings() -> Settings:
         serper_api_key="serper-test",
         exa_api_key="exa-test",
         perplexity_api_key="pplx-test",
+        socialdata_api_key="sd-test",
         redis_url="",
         require_human_review=False,
         data_dir="/tmp/verdandi-test",
@@ -157,6 +159,46 @@ class TestSerperProvider:
         assert "serper" in result.sources_used
         assert len(result.serper_results) >= 1
         assert len(result.serper_reddit) == 1
+
+    def test_collects_twitter_results(self, settings: Settings, config: CollectionConfig) -> None:
+        cached_call = _make_cached_call(
+            {
+                "serper": [
+                    {"title": "SERP", "link": "https://s.com", "snippet": "S", "position": 1}
+                ],
+                "serper_twitter_x": [
+                    {
+                        "title": "@dev: Tools are broken",
+                        "link": "https://x.com/dev/status/1",
+                        "snippet": "Everything is overpriced",
+                        "author": "dev",
+                        "position": 1,
+                    }
+                ],
+            }
+        )
+        result = SerperProvider(settings).collect(config, cached_call)
+
+        assert "serper" in result.sources_used
+        assert len(result.serper_twitter) == 1
+        assert result.serper_twitter[0]["author"] == "dev"
+
+    def test_skips_twitter_when_disabled(self, settings: Settings) -> None:
+        no_twitter = CollectionConfig(
+            queries=["q"],
+            primary_query="q",
+            include_twitter=False,
+        )
+        cached_call = _make_cached_call(
+            {
+                "serper": [
+                    {"title": "SERP", "link": "https://s.com", "snippet": "S", "position": 1}
+                ],
+            }
+        )
+        result = SerperProvider(settings).collect(no_twitter, cached_call)
+
+        assert len(result.serper_twitter) == 0
 
     def test_skips_reddit_when_disabled(self, settings: Settings) -> None:
         config = CollectionConfig(
@@ -338,15 +380,78 @@ class TestHNProvider:
         cached_call.assert_not_called()
 
 
+class TestSocialDataProvider:
+    def test_name_and_availability(self, settings: Settings) -> None:
+        provider = SocialDataProvider(settings)
+        assert provider.name == "socialdata"
+        assert provider.is_available is True
+
+    def test_unavailable_without_key(self) -> None:
+        no_key = Settings(
+            anthropic_api_key="test",
+            socialdata_api_key="",
+            redis_url="",
+            _env_file=None,
+        )
+        assert SocialDataProvider(no_key).is_available is False
+
+    def test_collects_tweets(self, settings: Settings, config: CollectionConfig) -> None:
+        cached_call = _make_cached_call(
+            {
+                "socialdata": [
+                    {
+                        "tweet_id": "123",
+                        "text": "Pain point tweet",
+                        "author_username": "dev",
+                        "author_name": "Dev",
+                        "author_followers": 500,
+                        "created_at": "",
+                        "favorite_count": 42,
+                        "retweet_count": 10,
+                        "reply_count": 5,
+                        "views_count": 3000,
+                        "url": "https://x.com/dev/status/123",
+                    }
+                ],
+            }
+        )
+        result = SocialDataProvider(settings).collect(config, cached_call)
+
+        assert "socialdata" in result.sources_used
+        assert len(result.twitter_results) == 1
+        assert result.twitter_results[0]["tweet_id"] == "123"
+
+    def test_skips_when_twitter_disabled(self, settings: Settings) -> None:
+        no_twitter_config = CollectionConfig(
+            queries=["q"],
+            primary_query="q",
+            include_twitter=False,
+        )
+        cached_call = MagicMock()
+        result = SocialDataProvider(settings).collect(no_twitter_config, cached_call)
+
+        assert result.has_data is False
+        cached_call.assert_not_called()
+
+    def test_returns_empty_without_query(self, settings: Settings) -> None:
+        empty_config = CollectionConfig(queries=[], primary_query="")
+        cached_call = MagicMock()
+        result = SocialDataProvider(settings).collect(empty_config, cached_call)
+
+        assert result.has_data is False
+        cached_call.assert_not_called()
+
+
 class TestDefaultProviders:
-    def test_creates_all_five_providers(self, settings: Settings) -> None:
+    def test_creates_all_six_providers(self, settings: Settings) -> None:
         from verdandi.providers import default_providers
 
         providers = default_providers(settings)
-        assert len(providers) == 5
+        assert len(providers) == 6
         names = [p.name for p in providers]
         assert "tavily" in names
         assert "serper" in names
         assert "exa" in names
         assert "perplexity" in names
+        assert "socialdata" in names
         assert "hn_algolia" in names

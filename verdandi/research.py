@@ -22,7 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from verdandi.clients.exa import ExaSearchResult
 from verdandi.clients.hn_algolia import HNComment, HNStory
 from verdandi.clients.perplexity import PerplexityDeepResult, PerplexityResult
-from verdandi.clients.serper import SerperRedditResult, SerperResult
+from verdandi.clients.serper import SerperRedditResult, SerperResult, SerperTwitterResult
+from verdandi.clients.socialdata import SocialDataTweet
 from verdandi.clients.tavily import TavilyResearchResult, TavilySearchResult
 from verdandi.retry import with_retry
 
@@ -49,6 +50,7 @@ class CollectionConfig:
     queries: list[str]
     primary_query: str
     include_reddit: bool = True
+    include_twitter: bool = True
     include_hn_comments: bool = True
     perplexity_question: str = ""
     exa_similar_url: str = ""
@@ -65,6 +67,8 @@ class RawResearchData(BaseModel):
     tavily_research: TavilyResearchResult | None = None
     serper_results: list[SerperResult] = Field(default_factory=list)
     serper_reddit: list[SerperRedditResult] = Field(default_factory=list)
+    serper_twitter: list[SerperTwitterResult] = Field(default_factory=list)
+    twitter_results: list[SocialDataTweet] = Field(default_factory=list)
     exa_results: list[ExaSearchResult] = Field(default_factory=list)
     perplexity_answer: PerplexityResult | None = None
     perplexity_deep_answer: PerplexityDeepResult | None = None
@@ -81,6 +85,8 @@ class RawResearchData(BaseModel):
             or self.tavily_research
             or self.serper_results
             or self.serper_reddit
+            or self.serper_twitter
+            or self.twitter_results
             or self.exa_results
             or self.perplexity_answer
             or self.hn_stories
@@ -102,6 +108,8 @@ def _merge_results(partials: list[RawResearchData]) -> RawResearchData:
         ),
         serper_results=[r for p in partials for r in p.serper_results],
         serper_reddit=[r for p in partials for r in p.serper_reddit],
+        serper_twitter=[r for p in partials for r in p.serper_twitter],
+        twitter_results=[r for p in partials for r in p.twitter_results],
         exa_results=[r for p in partials for r in p.exa_results],
         perplexity_answer=next(
             (p.perplexity_answer for p in partials if p.perplexity_answer is not None),
@@ -215,6 +223,7 @@ class ResearchCollector:
         queries: list[str],
         *,
         include_reddit: bool = True,
+        include_twitter: bool = True,
         include_hn_comments: bool = True,
         perplexity_question: str = "",
         exa_similar_url: str = "",
@@ -247,6 +256,7 @@ class ResearchCollector:
             queries=queries,
             primary_query=queries[0] if queries else "",
             include_reddit=include_reddit,
+            include_twitter=include_twitter,
             include_hn_comments=include_hn_comments,
             perplexity_question=perplexity_question,
             exa_similar_url=exa_similar_url,
@@ -332,6 +342,34 @@ def format_research_context(raw: RawResearchData) -> str:
         for rr in raw.serper_reddit:
             lines.append(f"- **r/{rr['subreddit']}**: {rr['title']} ({rr['link']})")
             lines.append(f"  {rr['snippet']}")
+        sections.append("\n".join(lines))
+
+    # Twitter/X discussions (via Serper site:x.com)
+    if raw.serper_twitter:
+        lines = ["## Twitter/X Discussions"]
+        for tw in raw.serper_twitter:
+            author_part = f"@{tw['author']}" if tw["author"] else "unknown"
+            lines.append(f"- **{author_part}**: {tw['title']} ({tw['link']})")
+            lines.append(f"  {tw['snippet']}")
+        sections.append("\n".join(lines))
+
+    # Twitter/X insights (via SocialData — rich engagement data)
+    if raw.twitter_results:
+        lines = ["## Twitter/X Insights (SocialData)"]
+        for tweet in raw.twitter_results:
+            lines.append(
+                f"- **@{tweet['author_username']}** "
+                f"({tweet['author_followers']:,} followers): "
+                f"({tweet['url']})"
+            )
+            text = tweet["text"][:400]
+            lines.append(f'  "{text}"')
+            lines.append(
+                f"  {tweet['favorite_count']} likes, "
+                f"{tweet['retweet_count']} RTs, "
+                f"{tweet['reply_count']} replies, "
+                f"{tweet['views_count']:,} views"
+            )
         sections.append("\n".join(lines))
 
     # Exa semantic results

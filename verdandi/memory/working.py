@@ -21,7 +21,8 @@ if TYPE_CHECKING:
     from verdandi.clients.exa import ExaSearchResult
     from verdandi.clients.hn_algolia import HNComment, HNStory
     from verdandi.clients.perplexity import PerplexityResult
-    from verdandi.clients.serper import SerperRedditResult, SerperResult
+    from verdandi.clients.serper import SerperRedditResult, SerperResult, SerperTwitterResult
+    from verdandi.clients.socialdata import SocialDataTweet
     from verdandi.clients.tavily import TavilySearchResult
 
 logger = structlog.get_logger()
@@ -50,6 +51,8 @@ class ResearchSession:
         self._tavily: list[TavilySearchResult] = []
         self._serper: list[SerperResult] = []
         self._serper_reddit: list[SerperRedditResult] = []
+        self._serper_twitter: list[SerperTwitterResult] = []
+        self._twitter: list[SocialDataTweet] = []
         self._exa: list[ExaSearchResult] = []
         self._perplexity: PerplexityResult | None = None
         self._hn_stories: list[HNStory] = []
@@ -60,6 +63,7 @@ class ResearchSession:
         # Dedup tracking
         self._seen_urls: set[str] = set()
         self._seen_hn_ids: set[str] = set()
+        self._seen_tweet_ids: set[str] = set()
 
         # LLM history threading (for multi-turn refinement within step)
         self._llm_history: list[Any] = []
@@ -96,6 +100,29 @@ class ResearchSession:
             if link:
                 self._seen_urls.add(link)
             self._serper_reddit.append(sr)
+
+        # Serper Twitter — dedup by link
+        for tw in raw.serper_twitter:
+            link = tw.get("link", "")
+            if link and link in self._seen_urls:
+                continue
+            if link:
+                self._seen_urls.add(link)
+            self._serper_twitter.append(tw)
+
+        # SocialData tweets — dedup by tweet_id + URL cross-dedup
+        for tweet in raw.twitter_results:
+            tid = tweet.get("tweet_id", "")
+            if tid and tid in self._seen_tweet_ids:
+                continue
+            url = tweet.get("url", "")
+            if url and url in self._seen_urls:
+                continue
+            if tid:
+                self._seen_tweet_ids.add(tid)
+            if url:
+                self._seen_urls.add(url)
+            self._twitter.append(tweet)
 
         # Exa results — dedup by URL
         for exa_r in raw.exa_results:
@@ -139,6 +166,8 @@ class ResearchSession:
             idea=self.idea_title,
             tavily=len(self._tavily),
             serper=len(self._serper),
+            serper_twitter=len(self._serper_twitter),
+            twitter=len(self._twitter),
             exa=len(self._exa),
             hn_stories=len(self._hn_stories),
             hn_comments=len(self._hn_comments),
@@ -151,6 +180,8 @@ class ResearchSession:
             self._tavily
             or self._serper
             or self._serper_reddit
+            or self._serper_twitter
+            or self._twitter
             or self._exa
             or self._perplexity
             or self._hn_stories
@@ -163,6 +194,8 @@ class ResearchSession:
             tavily_results=self._tavily,
             serper_results=self._serper,
             serper_reddit=self._serper_reddit,
+            serper_twitter=self._serper_twitter,
+            twitter_results=self._twitter,
             exa_results=self._exa,
             perplexity_answer=self._perplexity,
             hn_stories=self._hn_stories,
@@ -200,6 +233,8 @@ class ResearchSession:
             len(self._tavily)
             + len(self._serper)
             + len(self._serper_reddit)
+            + len(self._serper_twitter)
+            + len(self._twitter)
             + len(self._exa)
             + len(self._hn_stories)
             + len(self._hn_comments)
