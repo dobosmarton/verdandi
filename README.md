@@ -10,7 +10,7 @@ Verdandi runs a sequential 11-step pipeline for each product experiment:
 
 ```
 Step 0:  Idea Discovery      → Find promising product ideas from market signals
-Step 1:  Deep Research        → Multi-source market research (Tavily, Serper, Exa, Perplexity)
+Step 1:  Deep Research        → Multi-source market research (Tavily, Serper, Exa, Perplexity, HN, Twitter/X)
 Step 2:  Pre-Build Scoring    → Quantified GO / NO_GO / ITERATE decision
 Step 3:  MVP Definition       → Product spec, features, pricing, domain suggestions
 Step 4:  Landing Page Gen     → HTML + Tailwind CSS from template + LLM-generated copy
@@ -22,7 +22,7 @@ Step 9:  Distribution         → Post to LinkedIn, X, Reddit, Bluesky
 Step 10: Monitor              → Poll analytics, calculate conversion, decide GO/ITERATE/NO_GO
 ```
 
-Each step produces a validated Pydantic model consumed by the next — `IdeaCandidate` feeds into `MarketResearch`, which feeds into `PreBuildScore` (the first gate — NO_GO halts the pipeline). Approved experiments continue through `MVPDefinition` and `LandingPageContent` into `DeploymentResult` (shared across Steps 6-8), then `DistributionResult`, and finally `ValidationReport` (the second gate — GO/ITERATE/NO_GO). Steps read prior outputs via `db.get_step_result()`.
+Each step produces a validated Pydantic model consumed by the next — `IdeaCandidate` feeds into `MarketResearch`, which feeds into `PreBuildScore` (the first gate — NO_GO halts the pipeline). Approved experiments continue through `MVPDefinition` and `LandingPageContent` into `DeploymentResult` (shared across Steps 6-8), then `DistributionResult`, and finally `ValidationReport` (the second gate — GO/ITERATE/NO_GO). Agents read prior outputs via `ctx.prior_results.get_typed("step_name", Model)` — the orchestrator pre-loads all step results before invoking each agent, enforcing a clean separation where agents never access the database directly.
 
 Results are checkpointed to SQLite after every step, so the pipeline can resume from where it left off if interrupted.
 
@@ -51,11 +51,14 @@ Results are checkpointed to SQLite after every step, so the pipeline can resume 
 Key design decisions:
 
 - **No agent framework** — Custom Python orchestrator with step registry. Frameworks add debugging complexity dangerous for unattended autonomous operation.
-- **PydanticAI** for LLM-facing steps (structured outputs via `Agent` + `run_sync` + `result_type`).
+- **PydanticAI** for LLM-facing steps (structured outputs via `Agent` + `output_type` + streaming).
 - **SQLAlchemy 2.0+ ORM** for all database access. Frozen Pydantic models for domain objects, separate ORM models for persistence.
 - **SQLite + WAL mode** for state storage. Huey task queue with a separate SQLite broker for background jobs.
 - **Template-fill for landing pages** — Pre-built HTML + Tailwind templates with `{{TOKEN}}` placeholders. Near-zero failure rate vs. ~15% breakage from LLM-generated full HTML.
 - **structlog** with correlation IDs for request tracing across pipeline steps.
+- **Agent Council** for multi-model scoring — When enabled (`COUNCIL_ENABLED=true`), Step 2 runs the same scoring prompt across Anthropic, OpenAI, and Google models in parallel, then aggregates votes via majority rule.
+- **Pluggable research providers** via `ResearchProviderPort` protocol — 6 providers (Tavily, Serper, Exa, Perplexity, HN Algolia, SocialData) run in parallel. Adding a new source requires only a client and a provider class.
+- **Long-term memory** via Qdrant vector DB — Optional semantic dedup and memory using all-MiniLM-L6-v2 embeddings (384-dim). Degrades gracefully: Qdrant -> SQLite Python-loop fallback -> fingerprint-only.
 
 ## Quick Start
 
@@ -135,6 +138,7 @@ All configuration is via environment variables (loaded from `.env`):
 | `SERPER_API_KEY` | Google SERP data | 2,500 queries (one-time) |
 | `EXA_API_KEY` | Neural/semantic search | $10 one-time credit |
 | `PERPLEXITY_API_KEY` | AI-synthesized research | ~$0.006/query |
+| `SOCIALDATA_API_KEY` | Twitter/X social signals | Paid (per query) |
 
 ### Deployment APIs (Optional)
 
@@ -175,6 +179,30 @@ All configuration is via environment variables (loaded from `.env`):
 | `DATA_DIR` | `./data` | Directory for SQLite databases |
 | `VERDANDI_API_URL` | *(empty)* | Remote API URL — if set, CLI talks to HTTP instead of local SQLite |
 
+### Agent Council (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COUNCIL_ENABLED` | `false` | Enable multi-model scoring panel |
+| `OPENAI_API_KEY` | *(empty)* | OpenAI API key for council voting |
+| `OPENAI_MODEL` | `gpt-4o` | OpenAI model for council |
+| `GOOGLE_API_KEY` | *(empty)* | Google AI API key for council voting |
+| `GOOGLE_MODEL` | `gemini-2.5-flash` | Google model for council |
+
+### Research Cache (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_URL` | *(empty)* | Redis connection URL. If empty, caching is disabled |
+| `RESEARCH_CACHE_TTL_HOURS` | `24` | Cache TTL for research API results |
+
+### Long-Term Memory (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QDRANT_URL` | *(empty)* | Qdrant vector DB URL. If empty, falls back to SQLite/fingerprint dedup |
+| `QDRANT_API_KEY` | *(empty)* | Qdrant API key |
+
 ### Monitoring Thresholds
 
 | Variable | Default | Description |
@@ -187,25 +215,29 @@ All configuration is via environment variables (loaded from `.env`):
 ## CLI Reference
 
 ```
-verdandi                                    # Show help
-verdandi discover [--max-ideas N] [--dry-run]     # Discover product ideas
-verdandi run <ID> [--dry-run]               # Run pipeline for one experiment
-verdandi run --all [--dry-run]              # Run all pending experiments
-verdandi ls [--status STATUS]               # List experiments
-verdandi inspect <ID>                       # Show experiment summary + completed steps
-verdandi inspect <ID> --step scoring        # Show specific step result as JSON
-verdandi inspect <ID> --log                 # Show pipeline execution log
-verdandi report <ID>                        # Show structured research report
-verdandi review <ID> --approve [--notes ""] # Approve experiment for deployment
-verdandi review <ID> --reject [--notes ""]  # Reject experiment
-verdandi monitor [--all-live]               # Show running experiments
-verdandi archive <ID>                       # Archive an experiment
-verdandi check                              # Verify API key configuration
-verdandi reservations [--active-only/--all] # Show topic reservations
-verdandi serve [--host H] [--port P]        # Start the FastAPI API server
-verdandi worker [--workers N]               # Start Huey task queue consumer
-verdandi enqueue discover [--max-ideas N]   # Enqueue discovery job to worker
-verdandi enqueue run <ID> [--dry-run]       # Enqueue pipeline run to worker
+verdandi                                         # Show help
+verdandi discover [--max-ideas N] [--strategy auto|disruption|moonshot] [--dry-run]
+verdandi run <ID> [--dry-run] [--stop-after N]   # Run pipeline for one experiment
+verdandi run --all [--dry-run]                   # Run all pending experiments
+verdandi research [--max-ideas N] [--dry-run]    # Discover + research + score (stops at Step 2)
+verdandi ls [--status STATUS]                    # List experiments
+verdandi inspect <ID>                            # Show experiment summary + completed steps
+verdandi inspect <ID> --step scoring             # Show specific step result as JSON
+verdandi inspect <ID> --log                      # Show pipeline execution log
+verdandi report <ID>                             # Show structured research report
+verdandi review <ID> --approve [--notes ""]      # Approve experiment for deployment
+verdandi review <ID> --reject [--notes ""]       # Reject experiment
+verdandi monitor [--all-live]                    # Show running experiments
+verdandi archive <ID>                            # Archive an experiment
+verdandi check                                   # Verify API key configuration
+verdandi reservations [--active-only/--all]      # Show topic reservations
+verdandi cache ping                              # Check Redis connectivity
+verdandi cache stats                             # Show research cache statistics
+verdandi cache purge                             # Delete all research cache entries
+verdandi serve [--host H] [--port P]             # Start the FastAPI API server
+verdandi worker [--workers N]                    # Start Huey task queue consumer
+verdandi enqueue discover [--max-ideas N]        # Enqueue discovery job to worker
+verdandi enqueue run <ID> [--dry-run]            # Enqueue pipeline run to worker
 ```
 
 Add `-v` / `--verbose` to any command for debug-level logging.
@@ -228,6 +260,7 @@ All endpoints are under `/api/v1`:
 |--------|------|-------------|
 | `GET` | `/health` | Health check (DB connectivity) |
 | `GET` | `/config/check` | Show which API keys are configured |
+| `GET` | `/metrics` | Prometheus metrics (step durations, LLM tokens, council votes) |
 
 ### Experiments
 | Method | Path | Description |
@@ -360,7 +393,7 @@ verdandi enqueue run 3
 
 **Idea deduplication** uses a two-pass approach:
 1. **Fast pass**: Normalized keyword fingerprints with Jaccard similarity (threshold > 0.6)
-2. **Semantic pass**: Embedding similarity (stubbed; requires sentence-transformers)
+2. **Semantic pass**: Embedding similarity via all-MiniLM-L6-v2 (384-dim, cosine threshold > 0.82). Optionally indexed in Qdrant for O(log n) lookups; falls back to SQLite Python-loop if Qdrant is unavailable.
 
 ## Error Handling & Resilience
 
@@ -383,40 +416,63 @@ verdandi/
 ├── verdandi/
 │   ├── __init__.py             # Package version
 │   ├── py.typed                # PEP 561 typed package marker
-│   ├── cli.py                  # Click CLI (all commands)
+│   ├── cli.py                  # Click CLI (all commands incl. cache, enqueue groups)
 │   ├── config.py               # pydantic-settings configuration
-│   ├── db.py                   # Database facade (SQLAlchemy sessions + CRUD helpers)
-│   ├── engine.py               # SQLAlchemy engine factory + session maker
-│   ├── orm.py                  # ORM table models (ExperimentRow, StepResultRow, etc.)
-│   ├── orchestrator.py         # PipelineRunner, step execution, checkpoint/resume
-│   ├── llm.py                  # PydanticAI agent wrapper
+│   ├── llm.py                  # PydanticAI agent wrapper (multi-provider: Anthropic, OpenAI, Google)
 │   ├── logging.py              # structlog configuration
-│   ├── protocols.py            # Protocol interfaces (StepProtocol, etc.)
+│   ├── protocols.py            # Protocol interfaces (StepProtocol, ResearchProviderPort, ReadOnlyMemory)
 │   ├── retry.py                # Exponential backoff + circuit breaker
-│   ├── coordination.py         # Topic reservations, deduplication, worker identity
 │   ├── notifications.py        # Console/email notification stubs
-│   ├── tasks.py                # Huey task queue definitions
+│   ├── research.py             # ResearchCollector: parallel provider orchestration + result merging
+│   ├── strategies.py           # DiscoveryStrategy definitions (disruption, moonshot)
+│   ├── cache.py                # Redis-backed research result cache
+│   ├── metrics.py              # Prometheus metric definitions
+│   ├── orchestrator/           # Pipeline execution + coordination
+│   │   ├── runner.py           # PipelineRunner (pre-loads PriorResults, owns DB + Qdrant writes)
+│   │   ├── coordination.py     # TopicReservationManager, dedup, worker identity
+│   │   └── scheduler.py        # Huey task queue definitions
+│   ├── agents/                 # Pipeline step implementations (read-only — no direct DB access)
+│   │   ├── base.py             # AbstractStep, StepContext, PriorResults, @register_step
+│   │   ├── council.py          # AgentCouncil: multi-model scoring panel
+│   │   ├── discovery.py        # Step 0: Idea Discovery
+│   │   ├── research.py         # Step 1: Deep Research
+│   │   ├── scoring.py          # Step 2: Pre-Build Scoring (single-model or council)
+│   │   ├── mvp.py              # Step 3: MVP Definition
+│   │   ├── landing_page.py     # Step 4: Landing Page Generation
+│   │   ├── human_review.py     # Step 5: Human Review checkpoint
+│   │   ├── domain.py           # Step 6: Domain Purchase
+│   │   ├── deploy.py           # Step 7: Cloudflare Pages Deployment
+│   │   ├── analytics.py        # Step 8: Analytics Setup
+│   │   ├── distribution.py     # Step 9: Social Distribution
+│   │   └── monitor.py          # Step 10: Monitoring + go/no-go
+│   ├── memory/                 # Embedding + vector DB for semantic dedup
+│   │   ├── embeddings.py       # EmbeddingService (all-MiniLM-L6-v2, 384-dim)
+│   │   ├── long_term.py        # LongTermMemory (Qdrant vector DB)
+│   │   └── working.py          # ResearchSession — ephemeral dedup accumulator
+│   ├── providers/              # Research data providers (one per external API)
+│   │   ├── tavily.py, serper.py, exa.py, perplexity.py, hn.py, socialdata.py
+│   │   └── __init__.py         # default_providers() factory
+│   ├── db/                     # Database layer
+│   │   ├── engine.py           # SQLAlchemy engine factory + session maker
+│   │   ├── orm.py              # ORM table models (ExperimentRow, StepResultRow, etc.)
+│   │   └── facade.py           # Database facade (sessions + CRUD helpers)
 │   ├── models/                 # Frozen Pydantic models for every pipeline stage
 │   │   ├── base.py             # BaseStepResult
 │   │   ├── experiment.py       # Experiment + ExperimentStatus enum
-│   │   ├── idea.py             # IdeaCandidate, PainPoint
+│   │   ├── idea.py             # IdeaCandidate, PainPoint, DiscoveryType
 │   │   ├── research.py         # MarketResearch, Competitor, SearchResult
-│   │   ├── scoring.py          # PreBuildScore, ScoreComponent, Decision
+│   │   ├── scoring.py          # PreBuildScore, ScoreComponent, Decision, CouncilResult
 │   │   ├── mvp.py              # MVPDefinition, Feature
 │   │   ├── landing_page.py     # LandingPageContent, Testimonial, FAQItem
 │   │   ├── deployment.py       # DeploymentResult, DomainInfo, CloudflareDeployment
 │   │   ├── distribution.py     # DistributionResult, SocialPost, SEOSubmission
 │   │   └── validation.py       # ValidationReport, MetricsSnapshot, ValidationDecision
-│   ├── steps/                  # Pipeline step implementations (each with dry-run mock)
-│   │   ├── base.py             # AbstractStep, StepContext, @register_step
-│   │   ├── s0_idea_discovery.py  through  s10_monitor.py
-│   │   └── __init__.py         # Imports all steps to trigger registration
 │   ├── clients/                # External API clients (with mock fallbacks)
-│   │   ├── tavily.py, serper.py, exa.py, perplexity.py, hn_algolia.py
+│   │   ├── tavily.py, serper.py, exa.py, perplexity.py, hn_algolia.py, socialdata.py
 │   │   ├── porkbun.py, cloudflare.py, umami.py, emailoctopus.py
 │   │   └── social/             # twitter.py, linkedin.py, reddit.py, bluesky.py
 │   ├── api/                    # FastAPI REST API
-│   │   ├── app.py              # Application factory + lifespan
+│   │   ├── app.py              # Application factory + lifespan + Prometheus /metrics mount
 │   │   ├── middleware.py       # Correlation ID middleware, exception handlers
 │   │   ├── deps.py             # Dependency injection (DbDep, SettingsDep)
 │   │   ├── schemas.py          # Pydantic request/response schemas
@@ -425,11 +481,25 @@ verdandi/
 │       └── landing_v1.html     # Tailwind CDN template with {{TOKEN}} placeholders
 └── tests/
     ├── conftest.py             # Shared fixtures (tmp SQLite, sample experiments)
+    ├── fixtures/               # JSON fixtures for API client mocking
     ├── test_models.py          # Pydantic model validation tests
     ├── test_db.py              # Database CRUD tests
     ├── test_orchestrator.py    # Pipeline execution tests
     ├── test_coordination.py    # Topic reservation + dedup tests
     ├── test_retry.py           # Retry + circuit breaker tests
+    ├── test_clients.py         # httpx API client tests (respx mocking)
+    ├── test_providers.py       # Research provider tests
+    ├── test_research.py        # ResearchCollector integration tests
+    ├── test_council.py         # Agent council aggregation tests
+    ├── test_strategies.py      # Discovery strategy tests
+    ├── test_cache.py           # Redis cache tests (fakeredis)
+    ├── test_metrics.py         # Prometheus metric tests
+    ├── test_embeddings.py      # Embedding service tests
+    ├── test_memory_long_term.py  # Qdrant long-term memory tests
+    ├── test_memory_working.py  # Working memory (ResearchSession) tests
+    ├── test_steps_real.py      # Real step integration tests
+    ├── test_llm_integration.py # LLM client tests
+    ├── test_alembic.py         # Migration tests
     └── test_api/               # API endpoint tests
         ├── conftest.py         # FastAPI test client fixtures
         ├── test_experiments.py
@@ -471,10 +541,10 @@ mypy verdandi/
 
 ### Adding a New Pipeline Step
 
-1. Create `verdandi/steps/s11_your_step.py`:
+1. Create `verdandi/agents/your_step.py`:
 
 ```python
-from verdandi.steps.base import AbstractStep, StepContext, register_step
+from verdandi.agents.base import AbstractStep, StepContext, register_step
 
 @register_step
 class YourStep(AbstractStep):
@@ -484,12 +554,16 @@ class YourStep(AbstractStep):
     def run(self, ctx: StepContext) -> YourModel:
         if ctx.dry_run:
             return YourModel(...)  # Mock data
+
+        # Access prior step results (read-only, pre-loaded by orchestrator)
+        mvp = ctx.prior_results.get_typed("mvp_definition", MVPDefinition)
+
         # Real implementation
         return YourModel(...)
 ```
 
 2. Create the output model in `verdandi/models/your_model.py`
-3. Import the step in `verdandi/steps/__init__.py`
+3. Import the step in `verdandi/agents/__init__.py`
 
 The orchestrator will automatically pick it up via the `@register_step` decorator.
 
