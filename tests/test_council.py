@@ -19,6 +19,7 @@ from verdandi.models.scoring import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_components(
     scores: dict[str, int] | None = None,
 ) -> list[ScoreComponent]:
@@ -86,6 +87,7 @@ def _council_settings(**overrides: object) -> Settings:
 # ---------------------------------------------------------------------------
 # CouncilMemberVote & CouncilResult model tests
 # ---------------------------------------------------------------------------
+
 
 class TestCouncilModels:
     def test_vote_creation(self):
@@ -162,6 +164,7 @@ class TestCouncilModels:
 # ---------------------------------------------------------------------------
 # Aggregation logic tests
 # ---------------------------------------------------------------------------
+
 
 class TestAggregation:
     def _aggregate(
@@ -313,6 +316,7 @@ class TestAggregation:
 # Provider discovery tests
 # ---------------------------------------------------------------------------
 
+
 class TestProviderDiscovery:
     def test_all_three_providers(self):
         settings = _council_settings()
@@ -335,9 +339,7 @@ class TestProviderDiscovery:
         assert len(providers) == 1
 
     def test_no_providers(self):
-        settings = _council_settings(
-            anthropic_api_key="", openai_api_key="", google_api_key=""
-        )
+        settings = _council_settings(anthropic_api_key="", openai_api_key="", google_api_key="")
         council = AgentCouncil(settings)
         providers = council._discover_available_providers()
         assert len(providers) == 0
@@ -346,6 +348,7 @@ class TestProviderDiscovery:
 # ---------------------------------------------------------------------------
 # Config integration tests
 # ---------------------------------------------------------------------------
+
 
 class TestCouncilConfig:
     def test_council_disabled_by_default(self):

@@ -186,9 +186,7 @@ class ScoringStep(AbstractStep):
     # Prerequisites & prompt building (shared by single + council paths)
     # ------------------------------------------------------------------
 
-    def _load_prerequisites(
-        self, ctx: StepContext
-    ) -> tuple[IdeaCandidate, MarketResearch]:
+    def _load_prerequisites(self, ctx: StepContext) -> tuple[IdeaCandidate, MarketResearch]:
         """Load idea and research from prior results or database."""
         from verdandi.models.idea import IdeaCandidate
         from verdandi.models.research import MarketResearch
@@ -227,9 +225,7 @@ class ScoringStep(AbstractStep):
 
         return idea, research
 
-    def _build_user_prompt(
-        self, idea: IdeaCandidate, research: MarketResearch
-    ) -> str:
+    def _build_user_prompt(self, idea: IdeaCandidate, research: MarketResearch) -> str:
         """Build the scoring user prompt from idea and research data."""
         competitors_raw: list[dict[str, object]] = [
             comp.model_dump() for comp in research.competitors
@@ -332,11 +328,13 @@ class ScoringStep(AbstractStep):
         user_prompt = self._build_user_prompt(idea, research)
 
         # Check available provider count
-        available_count = sum([
-            bool(ctx.settings.anthropic_api_key),
-            bool(ctx.settings.openai_api_key),
-            bool(ctx.settings.google_api_key),
-        ])
+        available_count = sum(
+            [
+                bool(ctx.settings.anthropic_api_key),
+                bool(ctx.settings.openai_api_key),
+                bool(ctx.settings.google_api_key),
+            ]
+        )
 
         if available_count < 2:
             logger.warning(

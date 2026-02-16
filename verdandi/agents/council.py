@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from verdandi.llm import LLMClient, _get_or_create_event_loop
+from verdandi.llm import LLMClient
 from verdandi.metrics import council_evaluations_total, council_votes_total
 from verdandi.models.scoring import (
     CouncilMemberVote,
@@ -86,9 +86,7 @@ class AgentCouncil:
             experiment_id=experiment_id,
         )
 
-        votes = self._run_parallel(
-            providers, user_prompt, system_prompt, scoring_output_type
-        )
+        votes = self._run_parallel(providers, user_prompt, system_prompt, scoring_output_type)
 
         if not votes:
             msg = "All council members failed — cannot produce a score"
@@ -178,8 +176,17 @@ class AgentCouncil:
                 votes.append(result)
             return votes
 
-        loop = _get_or_create_event_loop()
-        return loop.run_until_complete(_gather_all())
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        votes: list[CouncilMemberVote] = loop.run_until_complete(_gather_all())
+        return votes
 
     def _aggregate(
         self,
@@ -254,8 +261,7 @@ class AgentCouncil:
 
         # Build reasoning summary
         vote_summary = ", ".join(
-            f"{v.provider_name}={v.decision.value}({v.base_score})"
-            for v in votes
+            f"{v.provider_name}={v.decision.value}({v.base_score})" for v in votes
         )
         reasoning = (
             f"Council vote: {vote_summary}. "

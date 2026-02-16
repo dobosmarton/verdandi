@@ -492,11 +492,11 @@ def report(ctx: click.Context, experiment_id: int, full: bool) -> None:
             decision_str = score.decision.value.upper()
             council_indicator = ""
             if score.council_votes:
-                go_count = sum(
-                    1 for v in score.council_votes if v.decision.value == "go"
-                )
+                go_count = sum(1 for v in score.council_votes if v.decision.value == "go")
                 council_indicator = f" [Council: {go_count}/{len(score.council_votes)} GO]"
-            out(f"\n  SCORING \u2014 {score.total_score}/100 \u2192 {decision_str}{council_indicator}")
+            out(
+                f"\n  SCORING \u2014 {score.total_score}/100 \u2192 {decision_str}{council_indicator}"
+            )
             out(f"  {_SINGLE_LINE}")
 
             if score.components:
