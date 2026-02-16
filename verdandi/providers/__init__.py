@@ -20,6 +20,7 @@ from verdandi.providers.exa import ExaProvider
 from verdandi.providers.hn import HNProvider
 from verdandi.providers.perplexity import PerplexityProvider
 from verdandi.providers.serper import SerperProvider
+from verdandi.providers.socialdata import SocialDataProvider
 from verdandi.providers.tavily import TavilyProvider
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ __all__ = [
     "HNProvider",
     "PerplexityProvider",
     "SerperProvider",
+    "SocialDataProvider",
     "TavilyProvider",
     "default_providers",
 ]
@@ -43,5 +45,6 @@ def default_providers(settings: Settings) -> list[ResearchProviderPort]:
         SerperProvider(settings),
         ExaProvider(settings),
         PerplexityProvider(settings),
+        SocialDataProvider(settings),
         HNProvider(),
     ]

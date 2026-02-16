@@ -84,6 +84,7 @@ class DeepResearchStep(AbstractStep):
         raw_data = collector.collect(
             queries,
             include_reddit=True,
+            include_twitter=True,
             include_hn_comments=True,
             perplexity_question=(
                 f"What is the total addressable market for {idea.title}? "

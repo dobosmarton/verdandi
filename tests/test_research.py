@@ -94,6 +94,40 @@ class TestRawResearchData:
         )
         assert raw.has_data is True
 
+    def test_has_data_with_serper_twitter(self) -> None:
+        raw = RawResearchData(
+            serper_twitter=[
+                {
+                    "title": "Test tweet",
+                    "link": "https://x.com/u/status/1",
+                    "snippet": "Content",
+                    "author": "u",
+                    "position": 1,
+                }
+            ]
+        )
+        assert raw.has_data is True
+
+    def test_has_data_with_twitter_results(self) -> None:
+        raw = RawResearchData(
+            twitter_results=[
+                {
+                    "tweet_id": "1",
+                    "text": "Test",
+                    "author_username": "u",
+                    "author_name": "U",
+                    "author_followers": 100,
+                    "created_at": "",
+                    "favorite_count": 10,
+                    "retweet_count": 5,
+                    "reply_count": 3,
+                    "views_count": 500,
+                    "url": "https://x.com/u/status/1",
+                }
+            ]
+        )
+        assert raw.has_data is True
+
 
 class TestMergeResults:
     def test_merges_list_fields(self) -> None:
@@ -365,6 +399,52 @@ class TestFormatResearchContext:
         assert "**Sources used**: tavily, hn_algolia" in text
         assert "**Errors encountered**: 1" in text
         assert "Serper failed" in text
+
+    def test_formats_serper_twitter(self) -> None:
+        raw = RawResearchData(
+            serper_twitter=[
+                {
+                    "title": "@dev: Tools are broken",
+                    "link": "https://x.com/dev/status/1",
+                    "snippet": "Everything is overpriced",
+                    "author": "dev",
+                    "position": 1,
+                }
+            ],
+            sources_used=["serper"],
+        )
+        text = format_research_context(raw)
+
+        assert "## Twitter/X Discussions" in text
+        assert "@dev" in text
+        assert "Everything is overpriced" in text
+
+    def test_formats_socialdata_twitter(self) -> None:
+        raw = RawResearchData(
+            twitter_results=[
+                {
+                    "tweet_id": "1",
+                    "text": "This market is broken",
+                    "author_username": "founder",
+                    "author_name": "F",
+                    "author_followers": 5000,
+                    "created_at": "",
+                    "favorite_count": 100,
+                    "retweet_count": 30,
+                    "reply_count": 20,
+                    "views_count": 15000,
+                    "url": "https://x.com/founder/status/1",
+                }
+            ],
+            sources_used=["socialdata"],
+        )
+        text = format_research_context(raw)
+
+        assert "## Twitter/X Insights (SocialData)" in text
+        assert "@founder" in text
+        assert "5,000 followers" in text
+        assert "100 likes" in text
+        assert "15,000 views" in text
 
     def test_empty_data_produces_minimal_output(self) -> None:
         raw = RawResearchData(sources_used=[], errors=[])

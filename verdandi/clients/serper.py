@@ -31,6 +31,14 @@ class SerperRedditResult(TypedDict):
     position: int
 
 
+class SerperTwitterResult(TypedDict):
+    title: str
+    link: str
+    snippet: str
+    author: str
+    position: int
+
+
 def _extract_subreddit(link: str) -> str:
     """Extract subreddit name from a Reddit URL.
 
@@ -41,6 +49,19 @@ def _extract_subreddit(link: str) -> str:
         idx = parts.index("r")
         if idx + 1 < len(parts):
             return parts[idx + 1]
+    return ""
+
+
+def _extract_twitter_author(link: str) -> str:
+    """Extract Twitter/X username from a tweet URL.
+
+    Expected format: ``https://x.com/USERNAME/status/...``
+    or ``https://twitter.com/USERNAME/status/...``
+    """
+    parts = link.split("/")
+    # https://x.com/username/status/123 -> parts = ['https:', '', 'x.com', 'username', ...]
+    if len(parts) >= 4 and parts[2] in ("x.com", "twitter.com", "www.x.com"):
+        return parts[3]
     return ""
 
 
@@ -151,6 +172,59 @@ class SerperClient:
             logger.warning("serper_reddit_search_failed", query=query, error=str(exc))
             return self._mock_search_reddit(query)
 
+    def search_twitter(self, query: str) -> list[SerperTwitterResult]:
+        """Search Twitter/X discussions via Google ``site:x.com`` queries.
+
+        Uses ``site:x.com`` to find relevant tweets discussing pain points,
+        product feedback, and market signals.
+
+        Args:
+            query: Topic to search for on Twitter/X.
+
+        Returns:
+            List of Twitter result dicts with keys: title, link, snippet,
+            author, position.
+        """
+        if not self.is_available:
+            logger.debug("Serper not configured, returning mock Twitter data")
+            return self._mock_search_twitter(query)
+
+        full_query = f"site:x.com {query}"
+        try:
+            with httpx.Client(timeout=_SEARCH_TIMEOUT) as client:
+                resp = client.post(
+                    f"{self.base_url}/search",
+                    headers={"X-API-KEY": self.api_key},
+                    json={"q": full_query, "num": 10},
+                )
+                resp.raise_for_status()
+                data: dict[str, object] = resp.json()
+                raw_results = data.get("organic", [])
+                if not isinstance(raw_results, list):
+                    raw_results = []
+                results: list[SerperTwitterResult] = []
+                for i, item in enumerate(raw_results):
+                    if not isinstance(item, dict):
+                        continue
+                    link = str(item.get("link", ""))
+                    result: SerperTwitterResult = {
+                        "title": str(item.get("title", "")),
+                        "link": link,
+                        "snippet": str(item.get("snippet", "")),
+                        "author": _extract_twitter_author(link),
+                        "position": i + 1,
+                    }
+                    results.append(result)
+                logger.info(
+                    "serper_twitter_search_complete",
+                    query=query,
+                    result_count=len(results),
+                )
+                return results
+        except httpx.HTTPError as exc:
+            logger.warning("serper_twitter_search_failed", query=query, error=str(exc))
+            return self._mock_search_twitter(query)
+
     # ------------------------------------------------------------------
     # Mock data
     # ------------------------------------------------------------------
@@ -201,6 +275,43 @@ class SerperClient:
                     "I learned about the market..."
                 ),
                 "subreddit": "SideProject",
+                "position": 3,
+            },
+        ]
+
+    def _mock_search_twitter(self, query: str) -> list[SerperTwitterResult]:
+        return [
+            {
+                "title": f"@devfounder: Frustrated with {query} tools...",
+                "link": "https://x.com/devfounder/status/1234567890",
+                "snippet": (
+                    f"I've been looking for a decent {query} solution for months. "
+                    "Everything is either overpriced or half-baked. "
+                    "Would pay good money for something that just works."
+                ),
+                "author": "devfounder",
+                "position": 1,
+            },
+            {
+                "title": f"@saas_builder: The {query} market is ripe for disruption",
+                "link": "https://x.com/saas_builder/status/1234567891",
+                "snippet": (
+                    f"Hot take: every {query} tool I've tried has the same "
+                    "fundamental UX problem. Someone is going to build a "
+                    "10x better version and clean up."
+                ),
+                "author": "saas_builder",
+                "position": 2,
+            },
+            {
+                "title": f"@indie_hacker: Just launched my {query} side project",
+                "link": "https://x.com/indie_hacker/status/1234567892",
+                "snippet": (
+                    f"After 3 months of building, my {query} tool is live. "
+                    "Already got 50 signups from a single tweet thread. "
+                    "The demand is real."
+                ),
+                "author": "indie_hacker",
                 "position": 3,
             },
         ]

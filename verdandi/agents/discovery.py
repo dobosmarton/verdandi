@@ -398,6 +398,7 @@ class IdeaDiscoveryStep(AbstractStep):
             raw_data = collector.collect(
                 strategy.discovery_queries,
                 include_reddit=strategy.prioritize_reddit,
+                include_twitter=strategy.prioritize_twitter,
                 include_hn_comments=strategy.prioritize_hn,
                 perplexity_question=strategy.discovery_perplexity_question,
             )
@@ -502,6 +503,7 @@ class IdeaDiscoveryStep(AbstractStep):
             raw_data = collector.collect(
                 _LEGACY_QUERIES,
                 include_reddit=True,
+                include_twitter=True,
                 include_hn_comments=True,
                 perplexity_question=_LEGACY_PERPLEXITY_QUESTION,
             )

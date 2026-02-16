@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     serper_api_key: str = ""
     exa_api_key: str = ""
     perplexity_api_key: str = ""
+    socialdata_api_key: str = ""
 
     # Deployment APIs (optional)
     porkbun_api_key: str = ""
