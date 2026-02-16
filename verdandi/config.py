@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # Required
     anthropic_api_key: str = ""
 
+    # Agent Council (optional — multi-model scoring)
+    council_enabled: bool = False
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
+    google_api_key: str = ""
+    google_model: str = "gemini-2.5-flash"
+
     # Research APIs (optional)
     tavily_api_key: str = ""
     serper_api_key: str = ""
