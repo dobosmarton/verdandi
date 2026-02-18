@@ -29,6 +29,8 @@ T = TypeVar("T", bound=BaseModel)
 # Unbounded TypeVar for the streaming helper (must accept both BaseModel and str)
 _OutputT = TypeVar("_OutputT")
 
+_DEFAULT_MAX_TOKENS = 16384
+
 
 async def _run_streamed(
     agent: Agent[None, _OutputT],
@@ -109,9 +111,14 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> ModelSettings:
-        """Build model_settings appropriate for the current provider."""
+        """Build model_settings appropriate for the current provider.
+
+        When ``max_tokens`` is None (not explicitly restricted), a generous
+        default is used to prevent output truncation — you only pay for tokens
+        actually generated, so a high ceiling has no cost impact.
+        """
         temp = temperature if temperature is not None else self.settings.llm_temperature
-        tokens = max_tokens if max_tokens is not None else self.settings.llm_max_tokens
+        tokens = max_tokens or self.settings.llm_max_tokens or _DEFAULT_MAX_TOKENS
 
         if self.provider_name == "openai":
             from pydantic_ai.models.openai import OpenAIChatModelSettings

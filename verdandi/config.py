@@ -71,7 +71,7 @@ class Settings(BaseSettings):
 
     # LLM settings
     llm_model: str = "claude-sonnet-4-5-20250929"
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int | None = None
     llm_temperature: float = 0.7
 
     # Data directory

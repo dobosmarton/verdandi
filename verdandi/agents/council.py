@@ -1,20 +1,30 @@
 """Agent Council: multi-model scoring panel for go/no-go decisions.
 
-Runs the same scoring prompt across multiple LLM providers (Anthropic, OpenAI,
-Google) in parallel and aggregates their independent votes via majority rule.
+Runs the same scoring prompt across multiple LLM providers and aggregates
+their independent votes via majority rule.
+
+Uses a quorum-based early-exit strategy: a randomly-chosen initial quorum of
+``N // 2 + 1`` providers runs in parallel.  If they unanimously agree the
+decision is locked and remaining providers are skipped.  Otherwise reserves
+are added one-by-one until the majority can no longer be overturned.
 """
 
 from __future__ import annotations
 
-import asyncio
 import math
+import random
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from verdandi.llm import LLMClient
-from verdandi.metrics import council_evaluations_total, council_votes_total
+from verdandi.metrics import (
+    council_early_exits_total,
+    council_evaluations_total,
+    council_votes_total,
+)
 from verdandi.models.scoring import (
     CouncilMemberVote,
     CouncilResult,
@@ -111,6 +121,8 @@ class AgentCouncil:
             nogo_votes=sum(1 for v in votes if v.decision == Decision.NO_GO),
             final_decision=council_result.decision.value,
             aggregated_score=council_result.total_score,
+            providers_used=len(votes),
+            providers_available=len(providers),
         )
 
         return PreBuildScore(
@@ -125,6 +137,48 @@ class AgentCouncil:
             council_votes=votes,
         )
 
+    def _score_one_sync(
+        self,
+        name: str,
+        client: LLMClient,
+        user_prompt: str,
+        system_prompt: str,
+        scoring_output_type: type[Any],
+    ) -> CouncilMemberVote:
+        """Score one provider synchronously. Runs in an executor thread."""
+        threshold = self.settings.score_go_threshold
+        result = client.generate(user_prompt, scoring_output_type, system=system_prompt)
+        base_total = int(sum(c.score * c.weight for c in result.components))
+        decision = Decision.GO if base_total >= threshold else Decision.NO_GO
+
+        return CouncilMemberVote(
+            provider_name=name,
+            model_name=client.model_name,
+            components=list(result.components),
+            base_score=base_total,
+            decision=decision,
+            risks=list(result.risks),
+            opportunities=list(result.opportunities),
+            reasoning_summary=result.reasoning_summary,
+        )
+
+    @staticmethod
+    def _has_consensus(go_count: int, nogo_count: int, remaining: int) -> bool:
+        """Check whether the majority decision is locked.
+
+        Returns ``True`` when additional votes cannot change the outcome:
+        - GO is locked if ``go_count`` already meets the majority threshold.
+        - NO_GO is locked if GO cannot reach the majority even if every
+          remaining provider votes GO.
+        """
+        max_total = go_count + nogo_count + remaining
+        majority = math.ceil(max_total / 2)
+        # GO already has enough votes
+        if go_count >= majority:
+            return True
+        # GO can never reach majority even with all remaining
+        return go_count + remaining < majority
+
     def _run_parallel(
         self,
         providers: list[tuple[str, LLMClient]],
@@ -132,61 +186,86 @@ class AgentCouncil:
         system_prompt: str,
         scoring_output_type: type[Any],
     ) -> list[CouncilMemberVote]:
-        """Run scoring across all providers concurrently."""
-        threshold = self.settings.score_go_threshold
+        """Run scoring with quorum-based early-exit.
 
-        async def _score_one(name: str, client: LLMClient) -> CouncilMemberVote:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: client.generate(
-                    user_prompt,
-                    scoring_output_type,
-                    system=system_prompt,
-                ),
+        1. Shuffle providers randomly for fairness.
+        2. Run an initial quorum of ``N // 2 + 1`` in parallel.
+        3. If the quorum unanimously agrees and consensus is locked, return
+           immediately — remaining providers are never called.
+        4. Otherwise add reserve providers one-by-one, stopping as soon as
+           the majority can no longer be overturned.
+        """
+        shuffled = random.sample(providers, len(providers))
+        n = len(shuffled)
+        quorum_size = n // 2 + 1
+        quorum = shuffled[:quorum_size]
+        reserves = shuffled[quorum_size:]
+
+        def _submit(
+            executor: ThreadPoolExecutor, name: str, client: LLMClient
+        ) -> Future[CouncilMemberVote]:
+            return executor.submit(
+                self._score_one_sync,
+                name,
+                client,
+                user_prompt,
+                system_prompt,
+                scoring_output_type,
             )
-            base_total = int(sum(c.score * c.weight for c in result.components))
-            decision = Decision.GO if base_total >= threshold else Decision.NO_GO
 
-            return CouncilMemberVote(
-                provider_name=name,
-                model_name=client.model_name,
-                components=list(result.components),
-                base_score=base_total,
-                decision=decision,
-                risks=list(result.risks),
-                opportunities=list(result.opportunities),
-                reasoning_summary=result.reasoning_summary,
-            )
+        def _resolve(future: Future[CouncilMemberVote], name: str) -> CouncilMemberVote | None:
+            try:
+                return future.result()
+            except Exception as exc:
+                logger.error("Council member failed", provider=name, error=str(exc))
+                return None
 
-        async def _gather_all() -> list[CouncilMemberVote]:
-            tasks = [_score_one(name, client) for name, client in providers]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
+        with ThreadPoolExecutor(max_workers=quorum_size) as executor:
+            # Phase 1 — run initial quorum in parallel
+            futures = [_submit(executor, name, client) for name, client in quorum]
             votes: list[CouncilMemberVote] = []
-            for i, result in enumerate(results):
-                name = providers[i][0]
-                if isinstance(result, BaseException):
-                    logger.error(
-                        "Council member failed",
-                        provider=name,
-                        error=str(result),
+            for i, future in enumerate(futures):
+                vote = _resolve(future, quorum[i][0])
+                if vote is not None:
+                    votes.append(vote)
+
+            go_count = sum(1 for v in votes if v.decision == Decision.GO)
+            nogo_count = len(votes) - go_count
+
+            # Check for early exit after quorum
+            if votes and self._has_consensus(go_count, nogo_count, len(reserves)):
+                council_early_exits_total.labels(
+                    decision=Decision.GO.value if go_count >= nogo_count else Decision.NO_GO.value
+                ).inc()
+                logger.info(
+                    "Council early exit",
+                    decision=Decision.GO.value if go_count >= nogo_count else Decision.NO_GO.value,
+                    providers_used=[v.provider_name for v in votes],
+                    providers_skipped=[name for name, _ in reserves],
+                )
+                return votes
+
+            # Phase 2 — add reserves one-by-one until consensus
+            for idx, (name, client) in enumerate(reserves):
+                vote = _resolve(_submit(executor, name, client), name)
+                if vote is not None:
+                    votes.append(vote)
+                    if vote.decision == Decision.GO:
+                        go_count += 1
+                    else:
+                        nogo_count += 1
+
+                remaining = len(reserves) - idx - 1
+                if self._has_consensus(go_count, nogo_count, remaining):
+                    logger.info(
+                        "Council consensus reached",
+                        go_votes=go_count,
+                        nogo_votes=nogo_count,
+                        providers_used=[v.provider_name for v in votes],
                     )
-                    continue
-                votes.append(result)
+                    break
+
             return votes
-
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        votes: list[CouncilMemberVote] = loop.run_until_complete(_gather_all())
-        return votes
 
     def _aggregate(
         self,

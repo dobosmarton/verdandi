@@ -63,6 +63,12 @@ council_evaluations_total = Counter(
     labelnames=["decision", "num_providers"],
 )
 
+council_early_exits_total = Counter(
+    "verdandi_council_early_exits_total",
+    "Council evaluations that short-circuited via first-two agreement",
+    labelnames=["decision"],
+)
+
 # --- Experiments ---
 
 experiments_total = Counter(

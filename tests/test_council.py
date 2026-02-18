@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from pydantic import ValidationError
 
 from verdandi.agents.council import _DIMENSION_NAMES, AgentCouncil
 from verdandi.config import Settings
+from verdandi.llm import LLMClient
 from verdandi.models.scoring import (
     CouncilMemberVote,
     CouncilResult,
@@ -363,3 +366,331 @@ class TestCouncilConfig:
         settings = _council_settings()
         assert settings.openai_model == "gpt-4o"
         assert settings.google_model == "gemini-2.5-flash"
+
+
+# ---------------------------------------------------------------------------
+# Parallel execution + early-exit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_providers(
+    settings: Settings, names: list[str] | None = None
+) -> list[tuple[str, LLMClient]]:
+    """Build a list of (name, LLMClient) tuples with mock clients."""
+    names = names or ["anthropic", "openai", "google"]
+    return [(n, LLMClient(settings, provider_name=n)) for n in names]
+
+
+class TestRunParallel:
+    """Tests for _run_parallel early-exit, tiebreaker, and failure fallback."""
+
+    def _make_council(self, **overrides: object) -> AgentCouncil:
+        return AgentCouncil(_council_settings(**overrides))
+
+    def _make_score_side_effect(self, vote_map: dict[str, CouncilMemberVote | Exception]):
+        """Return a side_effect function that returns/raises based on provider name."""
+
+        def side_effect(
+            name: str,
+            client: LLMClient,
+            user_prompt: str,
+            system_prompt: str,
+            scoring_output_type: type,
+        ) -> CouncilMemberVote:
+            response = vote_map[name]
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        return side_effect
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_early_exit_both_go(self, _mock_sample: MagicMock):
+        """When first two agree GO, third is skipped."""
+        council = self._make_council()
+        providers = _make_providers(council.settings)
+        vote_map = {
+            "anthropic": _make_vote("anthropic", Decision.GO, base_score=75),
+            "openai": _make_vote("openai", Decision.GO, base_score=80),
+            "google": _make_vote("google", Decision.GO, base_score=72),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        assert len(votes) == 2
+        assert all(v.decision == Decision.GO for v in votes)
+        assert mock_score.call_count == 2
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_early_exit_both_nogo(self, _mock_sample: MagicMock):
+        """When first two agree NO_GO, third is skipped."""
+        council = self._make_council()
+        providers = _make_providers(council.settings)
+        vote_map = {
+            "anthropic": _make_vote("anthropic", Decision.NO_GO, base_score=40),
+            "openai": _make_vote("openai", Decision.NO_GO, base_score=45),
+            "google": _make_vote("google", Decision.GO, base_score=80),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        assert len(votes) == 2
+        assert all(v.decision == Decision.NO_GO for v in votes)
+        assert mock_score.call_count == 2
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_tiebreaker_on_split(self, _mock_sample: MagicMock):
+        """When first two disagree, third runs as tiebreaker."""
+        council = self._make_council()
+        providers = _make_providers(council.settings)
+        vote_map = {
+            "anthropic": _make_vote("anthropic", Decision.GO, base_score=75),
+            "openai": _make_vote("openai", Decision.NO_GO, base_score=50),
+            "google": _make_vote("google", Decision.GO, base_score=72),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        assert len(votes) == 3
+        assert mock_score.call_count == 3
+        providers_voted = {v.provider_name for v in votes}
+        assert providers_voted == {"anthropic", "openai", "google"}
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_failure_in_quorum_consensus_locks(self, _mock_sample: MagicMock):
+        """When one quorum member fails, consensus can lock with the survivor.
+
+        With 3 providers, quorum=2. If one fails and the other votes GO,
+        consensus is locked: even if the reserve votes NO_GO, GO still wins
+        (ceil(2/2)=1, and GO already has 1).
+        """
+        council = self._make_council()
+        providers = _make_providers(council.settings)
+        vote_map: dict[str, CouncilMemberVote | Exception] = {
+            "anthropic": RuntimeError("API error"),
+            "openai": _make_vote("openai", Decision.GO, base_score=75),
+            "google": _make_vote("google", Decision.GO, base_score=72),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        # Consensus locked after quorum — reserve not called
+        assert len(votes) == 1
+        assert votes[0].provider_name == "openai"
+        assert mock_score.call_count == 2
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_failure_in_quorum_no_consensus_runs_reserve(self, _mock_sample: MagicMock):
+        """When both quorum members fail, reserve is called as last resort."""
+        council = self._make_council()
+        providers = _make_providers(council.settings)
+        vote_map: dict[str, CouncilMemberVote | Exception] = {
+            "anthropic": RuntimeError("API error"),
+            "openai": RuntimeError("Rate limited"),
+            "google": _make_vote("google", Decision.GO, base_score=72),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        assert len(votes) == 1
+        assert votes[0].provider_name == "google"
+        assert mock_score.call_count == 3
+
+    def test_two_providers_no_early_exit(self):
+        """With only 2 providers, both run — no early-exit possible."""
+        council = self._make_council(google_api_key="")
+        providers = _make_providers(council.settings, names=["anthropic", "openai"])
+        vote_map = {
+            "anthropic": _make_vote("anthropic", Decision.GO, base_score=75),
+            "openai": _make_vote("openai", Decision.GO, base_score=80),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        assert len(votes) == 2
+        assert mock_score.call_count == 2
+
+    def test_two_providers_one_fails(self):
+        """With only 2 providers and one fails, returns the surviving vote."""
+        council = self._make_council(google_api_key="")
+        providers = _make_providers(council.settings, names=["anthropic", "openai"])
+        vote_map: dict[str, CouncilMemberVote | Exception] = {
+            "anthropic": _make_vote("anthropic", Decision.GO, base_score=75),
+            "openai": RuntimeError("Quota exceeded"),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        assert len(votes) == 1
+        assert votes[0].provider_name == "anthropic"
+        assert mock_score.call_count == 2
+
+    def test_shuffle_randomness(self):
+        """Providers are passed through random.sample for fair ordering."""
+        council = self._make_council()
+        providers = _make_providers(council.settings)
+        # Reverse the provider order via random.sample mock
+        reversed_providers = list(reversed(providers))
+        vote_map = {
+            "anthropic": _make_vote("anthropic", Decision.GO, base_score=75),
+            "openai": _make_vote("openai", Decision.GO, base_score=80),
+            "google": _make_vote("google", Decision.GO, base_score=72),
+        }
+
+        call_order: list[str] = []
+        original_side_effect = self._make_score_side_effect(vote_map)
+
+        def tracking_side_effect(*args: object, **kwargs: object) -> CouncilMemberVote:
+            name = args[0]
+            assert isinstance(name, str)
+            call_order.append(name)
+            return original_side_effect(*args, **kwargs)
+
+        with (
+            patch(
+                "verdandi.agents.council.random.sample",
+                return_value=reversed_providers,
+            ),
+            patch.object(council, "_score_one_sync", side_effect=tracking_side_effect),
+        ):
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        # First two called should be from the reversed order (google, openai)
+        assert len(votes) == 2
+        assert call_order[0] == "google"
+        assert call_order[1] == "openai"
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_four_providers_quorum_agrees(self, _mock_sample: MagicMock):
+        """With 4 providers, quorum=3. If all 3 agree GO, 4th is skipped."""
+        council = self._make_council()
+        providers = _make_providers(council.settings, names=["a", "b", "c", "d"])
+        vote_map = {
+            "a": _make_vote("a", Decision.GO, base_score=75),
+            "b": _make_vote("b", Decision.GO, base_score=80),
+            "c": _make_vote("c", Decision.GO, base_score=72),
+            "d": _make_vote("d", Decision.NO_GO, base_score=40),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        # quorum=3 all GO. ceil(4/2)=2, go=3 >= 2 → locked. 4th skipped.
+        assert len(votes) == 3
+        assert all(v.decision == Decision.GO for v in votes)
+        assert mock_score.call_count == 3
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_four_providers_quorum_split_runs_reserve(self, _mock_sample: MagicMock):
+        """With 4 providers, quorum 2-1 split → 4th runs, consensus locks."""
+        council = self._make_council()
+        providers = _make_providers(council.settings, names=["a", "b", "c", "d"])
+        vote_map = {
+            "a": _make_vote("a", Decision.GO, base_score=75),
+            "b": _make_vote("b", Decision.GO, base_score=80),
+            "c": _make_vote("c", Decision.NO_GO, base_score=50),
+            "d": _make_vote("d", Decision.GO, base_score=72),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        # quorum=3: 2 GO, 1 NO_GO. go+remaining(1)=3 >= ceil(4/2)=2 → not locked.
+        # But actually: go=2 >= ceil(4/2)=2 → IS locked. No need for 4th.
+        # Wait: _has_consensus(2, 1, 1) → max=4, majority=2, go=2 >= 2 → True
+        assert len(votes) == 3
+        assert mock_score.call_count == 3
+
+    @patch("verdandi.agents.council.random.sample", side_effect=lambda seq, n: list(seq))
+    def test_five_providers_early_consensus(self, _mock_sample: MagicMock):
+        """With 5 providers, quorum=3. 2GO+1NOGO in quorum, 4th votes GO → locked."""
+        council = self._make_council()
+        providers = _make_providers(council.settings, names=["a", "b", "c", "d", "e"])
+        vote_map = {
+            "a": _make_vote("a", Decision.GO, base_score=75),
+            "b": _make_vote("b", Decision.NO_GO, base_score=50),
+            "c": _make_vote("c", Decision.GO, base_score=72),
+            "d": _make_vote("d", Decision.GO, base_score=78),
+            "e": _make_vote("e", Decision.NO_GO, base_score=45),
+        }
+
+        with patch.object(
+            council, "_score_one_sync", side_effect=self._make_score_side_effect(vote_map)
+        ) as mock_score:
+            votes = council._run_parallel(providers, "prompt", "system", MagicMock)
+
+        # quorum (a,b,c) = 2GO, 1NOGO. _has_consensus(2,1,2) → max=5, ceil(5/2)=3.
+        # go=2 < 3 → not locked. go+remaining=4 >= 3 → not locked. Run reserve d.
+        # After d: 3GO, 1NOGO. _has_consensus(3,1,1) → max=5, ceil(5/2)=3.
+        # go=3 >= 3 → locked! Skip e.
+        assert mock_score.call_count == 4
+        go_votes = [v for v in votes if v.decision == Decision.GO]
+        assert len(go_votes) == 3
+        providers_voted = {v.provider_name for v in votes}
+        assert "e" not in providers_voted
+
+
+# ---------------------------------------------------------------------------
+# Consensus check unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestHasConsensus:
+    """Direct unit tests for AgentCouncil._has_consensus."""
+
+    def test_go_locked_no_remaining(self):
+        # 2 GO, 1 NOGO, 0 remaining → ceil(3/2)=2, go=2 >= 2
+        assert AgentCouncil._has_consensus(2, 1, 0) is True
+
+    def test_nogo_locked_no_remaining(self):
+        # 0 GO, 2 NOGO, 0 remaining → ceil(2/2)=1, go=0 < 1 and go+0 < 1
+        assert AgentCouncil._has_consensus(0, 2, 0) is True
+
+    def test_go_locked_with_remaining(self):
+        # 3 GO, 1 NOGO, 1 remaining → ceil(5/2)=3, go=3 >= 3
+        assert AgentCouncil._has_consensus(3, 1, 1) is True
+
+    def test_nogo_locked_with_remaining(self):
+        # 0 GO, 3 NOGO, 1 remaining → ceil(4/2)=2, go+remaining=1 < 2
+        assert AgentCouncil._has_consensus(0, 3, 1) is True
+
+    def test_undecided_even_split(self):
+        # 1 GO, 1 NOGO, 1 remaining → ceil(3/2)=2. go=1 < 2. go+1=2 >= 2 → not locked
+        assert AgentCouncil._has_consensus(1, 1, 1) is False
+
+    def test_undecided_many_remaining(self):
+        # 1 GO, 0 NOGO, 3 remaining → ceil(4/2)=2. go=1 < 2. go+3=4 >= 2 → not locked
+        assert AgentCouncil._has_consensus(1, 0, 3) is False
+
+    def test_single_vote_one_remaining(self):
+        # 1 GO, 0 NOGO, 1 remaining → ceil(2/2)=1. go=1 >= 1 → locked
+        assert AgentCouncil._has_consensus(1, 0, 1) is True
+
+    def test_zero_votes(self):
+        # 0 GO, 0 NOGO, 3 remaining → ceil(3/2)=2. go=0 < 2. go+3=3 >= 2 → not locked
+        assert AgentCouncil._has_consensus(0, 0, 3) is False
