@@ -225,6 +225,83 @@ class TestResearchSessionFormatting:
         assert len(raw.errors) == 1
 
 
+class TestIngestWithDelta:
+    def test_delta_on_new_data(self) -> None:
+        """Ingesting fresh data returns the count of new results."""
+        session = ResearchSession("Test", "cat")
+        raw = _make_raw(
+            tavily=[
+                {
+                    "title": "New",
+                    "url": "https://new.com",
+                    "content": "Content",
+                    "score": 0.9,
+                    "published_date": "",
+                }
+            ],
+        )
+        delta = session.ingest_with_delta(raw)
+        assert delta == 1
+        assert session.total_results == 1
+
+    def test_delta_zero_on_duplicate(self) -> None:
+        """Re-ingesting the same URL returns 0 new results."""
+        session = ResearchSession("Test", "cat")
+        raw = _make_raw(
+            tavily=[
+                {
+                    "title": "A",
+                    "url": "https://same.com",
+                    "content": "C",
+                    "score": 0.9,
+                    "published_date": "",
+                }
+            ],
+        )
+        session.ingest(raw)  # first ingest
+        delta = session.ingest_with_delta(raw)  # duplicate
+        assert delta == 0
+        assert session.total_results == 1
+
+    def test_delta_partial_new(self) -> None:
+        """Ingesting a mix of duplicate + new URLs returns count of only new."""
+        session = ResearchSession("Test", "cat")
+        raw1 = _make_raw(
+            tavily=[
+                {
+                    "title": "Old",
+                    "url": "https://old.com",
+                    "content": "C",
+                    "score": 0.8,
+                    "published_date": "",
+                }
+            ],
+        )
+        session.ingest(raw1)
+
+        raw2 = _make_raw(
+            tavily=[
+                {
+                    "title": "Old dup",
+                    "url": "https://old.com",  # duplicate
+                    "content": "C",
+                    "score": 0.8,
+                    "published_date": "",
+                },
+                {
+                    "title": "New",
+                    "url": "https://new.com",  # new
+                    "content": "C",
+                    "score": 0.7,
+                    "published_date": "",
+                },
+            ],
+        )
+        delta = session.ingest_with_delta(raw2)
+        assert delta == 1
+        assert session.total_results == 2
+
+
 class TestResearchSessionLLMHistory:
     def test_llm_history_empty_by_default(self) -> None:
         session = ResearchSession("Test", "cat")

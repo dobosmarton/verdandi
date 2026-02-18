@@ -213,6 +213,17 @@ class ResearchSession:
         """
         return format_research_context(self.to_raw())
 
+    def ingest_with_delta(self, raw: RawResearchData) -> int:
+        """Ingest raw data and return the number of NEW results added.
+
+        Returns 0 when all results were duplicates of previously ingested
+        data.  Used by multi-turn research to detect when a follow-up
+        round produced no new information, allowing early termination.
+        """
+        before = self.total_results
+        self.ingest(raw)
+        return self.total_results - before
+
     def add_llm_turn(self, messages: list[Any]) -> None:
         """Record LLM conversation messages for multi-turn refinement.
 

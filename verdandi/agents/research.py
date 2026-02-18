@@ -1,14 +1,56 @@
-"""Step 1: Deep Research — comprehensive market research for an idea."""
+"""Step 1: Deep Research — comprehensive market research for an idea.
+
+Collects research from all available providers in parallel, then optionally
+performs follow-up rounds to fill evidence gaps identified by an LLM gap
+analysis. The number of rounds is controlled by ``research_max_rounds``
+(default 2: one broad collection + one targeted follow-up).
+"""
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import structlog
 from pydantic import BaseModel, ConfigDict
 
 from verdandi.agents.base import AbstractStep, StepContext, register_step
-from verdandi.models.research import Competitor, MarketResearch, SearchResult
+from verdandi.models.research import (
+    RESEARCH_DIMENSIONS,
+    Competitor,
+    MarketResearch,
+    ResearchGapAnalysis,
+    SearchResult,
+)
+
+if TYPE_CHECKING:
+    from verdandi.research import RawResearchData
 
 logger = structlog.get_logger()
+
+# Maximum follow-up queries generated per round
+_MAX_FOLLOWUP_QUERIES: int = 5
+
+# Providers used for targeted follow-up rounds (cheaper + question-friendly)
+_FOLLOWUP_PROVIDER_NAMES: frozenset[str] = frozenset({"tavily", "perplexity"})
+
+_GAP_ANALYSIS_SYSTEM: str = (
+    "You are a market research quality assessor. Your job is to identify "
+    "what evidence is strong, what is missing, and what targeted queries "
+    "would fill the gaps. Be rigorous — a dimension needs multiple "
+    "independent data points to score above 0.7."
+)
+
+_SYNTHESIS_SYSTEM: str = (
+    "You are a market research analyst. Analyze the provided research "
+    "data and produce a comprehensive market assessment. Be "
+    "evidence-based — cite specific data points from the research. "
+    "Do not invent statistics or data."
+)
+
+
+# ------------------------------------------------------------------
+# Pure helper functions
+# ------------------------------------------------------------------
 
 
 class _MarketResearchLLMOutput(BaseModel):
@@ -33,6 +75,164 @@ class _MarketResearchLLMOutput(BaseModel):
     research_summary: str
 
 
+def _build_gap_analysis_prompt(
+    idea_title: str,
+    problem_statement: str,
+    category: str,
+    research_text: str,
+) -> str:
+    """Build the prompt for the gap analysis LLM call."""
+    dimension_lines = "\n".join(f"{i}. **{dim}**" for i, dim in enumerate(RESEARCH_DIMENSIONS, 1))
+    return (
+        f"## Product Idea\n\n"
+        f"**Title**: {idea_title}\n"
+        f"**Problem**: {problem_statement}\n"
+        f"**Category**: {category}\n\n"
+        f"## Research Data Collected So Far\n\n"
+        f"{research_text}\n\n"
+        f"## Instructions\n\n"
+        f"Analyze the research data above and assess how confident we can be "
+        f"in each of the following 5 dimensions:\n"
+        f"{dimension_lines}\n\n"
+        f"For each dimension, score confidence 0.0-1.0 where:\n"
+        f"- < 0.3 = no credible evidence found\n"
+        f"- 0.3-0.6 = some evidence but gaps remain\n"
+        f"- 0.6-0.8 = solid evidence from multiple sources\n"
+        f"- > 0.8 = strong multi-source evidence with specifics\n\n"
+        f"Then generate up to {_MAX_FOLLOWUP_QUERIES} targeted follow-up "
+        f"search queries that would fill the weakest gaps. Focus queries on "
+        f"dimensions with confidence < 0.6. Be specific — include company "
+        f"names, product names, or precise market terms.\n\n"
+        f"Also generate a single synthesized question for Perplexity to "
+        f"research in depth about the weakest gap."
+    )
+
+
+def _build_synthesis_prompt(
+    idea_title: str,
+    problem_statement: str,
+    target_audience: str,
+    category: str,
+    research_text: str,
+    rounds_completed: int,
+) -> str:
+    """Build the final synthesis prompt, noting multi-round provenance."""
+    round_note = ""
+    if rounds_completed > 1:
+        round_note = (
+            f"\n\n**Note**: This research was collected across "
+            f"{rounds_completed} rounds. Later rounds targeted specific "
+            f"gaps identified in earlier data. When evidence from follow-up "
+            f"rounds contradicts or refines initial findings, prefer the "
+            f"more specific and recent evidence.\n"
+        )
+
+    return (
+        f"## Product Idea\n\n"
+        f"**Title**: {idea_title}\n"
+        f"**Problem**: {problem_statement}\n"
+        f"**Target Audience**: {target_audience}\n"
+        f"**Category**: {category}\n"
+        f"{round_note}\n"
+        f"## Research Data\n\n"
+        f"{research_text}\n\n"
+        f"## Instructions\n\n"
+        f"Based on the research data above, produce a comprehensive market "
+        f"assessment. For each field, ground your analysis in specific "
+        f"evidence from the research data. Include concrete numbers, "
+        f"quotes, and references where available."
+    )
+
+
+def _merge_followup_queries(
+    llm_queries: list[str],
+    tavily_questions: list[str],
+    max_total: int = _MAX_FOLLOWUP_QUERIES,
+) -> list[str]:
+    """Merge LLM-generated and Tavily follow-up queries, deduplicating.
+
+    LLM queries take priority. Tavily questions are appended if they are
+    not near-duplicates of existing queries. Dedup uses lowercased substring
+    matching — sufficient for a small list of 5-10 items.
+    """
+    merged: list[str] = []
+    seen_lower: list[str] = []
+
+    for q in llm_queries:
+        if len(merged) >= max_total:
+            break
+        q_stripped = q.strip()
+        if not q_stripped:
+            continue
+        merged.append(q_stripped)
+        seen_lower.append(q_stripped.lower())
+
+    for tq in tavily_questions:
+        if len(merged) >= max_total:
+            break
+        tq_stripped = tq.strip()
+        if not tq_stripped:
+            continue
+        tq_lower = tq_stripped.lower()
+        # Skip if any existing query contains this one or vice versa
+        is_dup = any(tq_lower in existing or existing in tq_lower for existing in seen_lower)
+        if not is_dup:
+            merged.append(tq_stripped)
+            seen_lower.append(tq_lower)
+
+    return merged
+
+
+def _extract_tavily_followups(raw: RawResearchData) -> list[str]:
+    """Extract follow_up_questions from Tavily research results if present."""
+    if raw.tavily_research is not None:
+        return list(raw.tavily_research.get("follow_up_questions", []))
+    return []
+
+
+def _build_search_results(raw: RawResearchData) -> list[SearchResult]:
+    """Build SearchResult list from raw API data (NOT LLM-generated)."""
+    results: list[SearchResult] = [
+        SearchResult(
+            title=tr["title"],
+            url=tr["url"],
+            snippet=tr["content"][:300],
+            source="tavily",
+            relevance_score=float(tr.get("score", 0.0)),
+        )
+        for tr in raw.tavily_results
+    ]
+
+    results.extend(
+        SearchResult(
+            title=sr["title"],
+            url=sr["link"],
+            snippet=sr["snippet"],
+            source="serper",
+            relevance_score=0.0,
+        )
+        for sr in raw.serper_results
+    )
+
+    results.extend(
+        SearchResult(
+            title=er["title"],
+            url=er["url"],
+            snippet=er["text"][:300] if er["text"] else "",
+            source="exa",
+            relevance_score=er["score"],
+        )
+        for er in raw.exa_results
+    )
+
+    return results
+
+
+# ------------------------------------------------------------------
+# Step implementation
+# ------------------------------------------------------------------
+
+
 @register_step
 class DeepResearchStep(AbstractStep):
     name = "deep_research"
@@ -45,6 +245,7 @@ class DeepResearchStep(AbstractStep):
         from verdandi.llm import LLMClient
         from verdandi.memory.working import ResearchSession
         from verdandi.models.idea import IdeaCandidate
+        from verdandi.providers import default_providers
         from verdandi.research import ResearchCollector
 
         experiment_id = ctx.experiment.id
@@ -65,23 +266,32 @@ class DeepResearchStep(AbstractStep):
         else:
             raise RuntimeError("No prior_results or db available to retrieve idea")
 
+        max_rounds = ctx.settings.research_max_rounds
+
         logger.info(
             "Starting deep research",
             experiment_id=ctx.experiment.id,
             idea_title=idea.title,
             category=idea.category,
+            max_rounds=max_rounds,
         )
 
-        # Build targeted queries from the idea
+        llm = LLMClient(ctx.settings)
+        session = ResearchSession(idea_title=idea.title, idea_category=idea.category)
+
+        # Build full provider set (for round 1) and follow-up subset
+        all_providers = default_providers(ctx.settings)
+        followup_providers = [p for p in all_providers if p.name in _FOLLOWUP_PROVIDER_NAMES]
+
+        # ---- Round 1: broad collection with all providers ----
         queries = [
             f"{idea.title} competitors alternatives",
             f"{idea.category} market size TAM",
             f'"{idea.target_audience}" pain points {idea.category}',
         ]
 
-        # Collect raw research data from all available APIs
-        collector = ResearchCollector(ctx.settings)
-        raw_data = collector.collect(
+        collector_full = ResearchCollector(ctx.settings, providers=all_providers)
+        raw_data = collector_full.collect(
             queries,
             include_reddit=True,
             include_twitter=True,
@@ -99,40 +309,126 @@ class DeepResearchStep(AbstractStep):
             use_perplexity_deep=True,
         )
 
-        # Accumulate and deduplicate via ResearchSession
-        session = ResearchSession(idea_title=idea.title, idea_category=idea.category)
         session.ingest(raw_data)
+        tavily_followups = _extract_tavily_followups(raw_data)
+
+        logger.info(
+            "Round 1 collection complete",
+            experiment_id=ctx.experiment.id,
+            total_results=session.total_results,
+            tavily_followups_available=len(tavily_followups),
+        )
+
+        # Track the latest gap analysis and round count
+        gap_analysis: ResearchGapAnalysis | None = None
+        rounds_completed = 1
+
+        # ---- Follow-up rounds (round 2 .. max_rounds) ----
+        for round_num in range(2, max_rounds + 1):
+            research_text = session.formatted_context
+
+            # Ask LLM: what gaps remain?
+            gap_prompt = _build_gap_analysis_prompt(
+                idea_title=idea.title,
+                problem_statement=idea.problem_statement,
+                category=idea.category,
+                research_text=research_text,
+            )
+            gap_analysis = llm.generate(
+                gap_prompt,
+                ResearchGapAnalysis,
+                system=_GAP_ANALYSIS_SYSTEM,
+                temperature=0.3,
+            )
+
+            logger.info(
+                "Gap analysis complete",
+                experiment_id=ctx.experiment.id,
+                round=round_num,
+                overall_confidence=gap_analysis.overall_confidence,
+                weakest_dimensions=gap_analysis.weakest_dimensions,
+                followup_query_count=len(gap_analysis.follow_up_queries),
+            )
+
+            # Early exit if confidence is already high enough
+            if gap_analysis.overall_confidence >= ctx.settings.research_confidence_threshold:
+                logger.info(
+                    "Research confidence threshold met, skipping further rounds",
+                    experiment_id=ctx.experiment.id,
+                    confidence=gap_analysis.overall_confidence,
+                    threshold=ctx.settings.research_confidence_threshold,
+                )
+                break
+
+            # Merge LLM follow-ups with Tavily's suggestions
+            followup_queries = _merge_followup_queries(
+                gap_analysis.follow_up_queries,
+                tavily_followups,
+            )
+
+            if not followup_queries:
+                logger.info(
+                    "No follow-up queries generated, ending research",
+                    experiment_id=ctx.experiment.id,
+                    round=round_num,
+                )
+                break
+
+            # Collect with targeted provider subset
+            collector_targeted = ResearchCollector(
+                ctx.settings,
+                providers=followup_providers,
+            )
+            followup_raw = collector_targeted.collect(
+                followup_queries,
+                include_reddit=False,
+                include_twitter=False,
+                include_hn_comments=False,
+                perplexity_question=gap_analysis.follow_up_perplexity_question,
+                exa_similar_url="",
+                tavily_research_query="",
+                use_perplexity_deep=False,
+            )
+
+            # Ingest and check if we got new data
+            new_results = session.ingest_with_delta(followup_raw)
+            rounds_completed = round_num
+
+            logger.info(
+                "Follow-up round complete",
+                experiment_id=ctx.experiment.id,
+                round=round_num,
+                new_results=new_results,
+                total_results=session.total_results,
+            )
+
+            if new_results == 0:
+                logger.info(
+                    "Follow-up round returned no new data, ending research",
+                    experiment_id=ctx.experiment.id,
+                    round=round_num,
+                )
+                break
+
+            # Refresh Tavily follow-ups from this round's data
+            tavily_followups = _extract_tavily_followups(followup_raw)
+
+        # ---- Final synthesis ----
         research_text = session.formatted_context
 
-        # Build prompts for LLM synthesis
-        system_prompt = (
-            "You are a market research analyst. Analyze the provided research "
-            "data and produce a comprehensive market assessment. Be "
-            "evidence-based — cite specific data points from the research. "
-            "Do not invent statistics or data."
+        synthesis_prompt = _build_synthesis_prompt(
+            idea_title=idea.title,
+            problem_statement=idea.problem_statement,
+            target_audience=idea.target_audience,
+            category=idea.category,
+            research_text=research_text,
+            rounds_completed=rounds_completed,
         )
 
-        user_prompt = (
-            f"## Product Idea\n\n"
-            f"**Title**: {idea.title}\n"
-            f"**Problem**: {idea.problem_statement}\n"
-            f"**Target Audience**: {idea.target_audience}\n"
-            f"**Category**: {idea.category}\n\n"
-            f"## Research Data\n\n"
-            f"{research_text}\n\n"
-            f"## Instructions\n\n"
-            f"Based on the research data above, produce a comprehensive market "
-            f"assessment. For each field, ground your analysis in specific "
-            f"evidence from the research data. Include concrete numbers, "
-            f"quotes, and references where available."
-        )
-
-        # Generate structured LLM output
-        llm = LLMClient(ctx.settings)
         result = llm.generate(
-            user_prompt,
+            synthesis_prompt,
             _MarketResearchLLMOutput,
-            system=system_prompt,
+            system=_SYNTHESIS_SYSTEM,
         )
 
         logger.info(
@@ -140,52 +436,19 @@ class DeepResearchStep(AbstractStep):
             experiment_id=ctx.experiment.id,
             competitor_count=len(result.competitors),
             finding_count=len(result.key_findings),
+            rounds_completed=rounds_completed,
         )
 
-        # Build search_results from raw API data (NOT LLM-generated)
-        search_results: list[SearchResult] = [
-            SearchResult(
-                title=tr["title"],
-                url=tr["url"],
-                snippet=tr["content"][:300],
-                source="tavily",
-                relevance_score=float(tr.get("score", 0.0)),
-            )
-            for tr in raw_data.tavily_results
-        ]
-
-        search_results.extend(
-            SearchResult(
-                title=sr["title"],
-                url=sr["link"],
-                snippet=sr["snippet"],
-                source="serper",
-                relevance_score=0.0,
-            )
-            for sr in raw_data.serper_results
-        )
-
-        search_results.extend(
-            SearchResult(
-                title=er["title"],
-                url=er["url"],
-                snippet=er["text"][:300] if er["text"] else "",
-                source="exa",
-                relevance_score=er["score"],
-            )
-            for er in raw_data.exa_results
-        )
+        # Build search_results from the session's accumulated raw data
+        accumulated_raw = session.to_raw()
+        search_results = _build_search_results(accumulated_raw)
 
         logger.info(
             "Search results compiled",
             experiment_id=ctx.experiment.id,
             total_search_results=len(search_results),
-            tavily_count=len(raw_data.tavily_results),
-            serper_count=len(raw_data.serper_results),
-            exa_count=len(raw_data.exa_results),
         )
 
-        # Construct full MarketResearch from LLM output + search_results + metadata
         return MarketResearch(
             experiment_id=ctx.experiment.id or 0,
             worker_id=ctx.worker_id,
@@ -200,6 +463,8 @@ class DeepResearchStep(AbstractStep):
             search_results=search_results,
             key_findings=result.key_findings,
             research_summary=result.research_summary,
+            research_rounds_completed=rounds_completed,
+            gap_analysis=gap_analysis,
         )
 
     def _mock_research(self, ctx: StepContext) -> MarketResearch:

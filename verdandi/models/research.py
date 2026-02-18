@@ -2,9 +2,67 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from verdandi.models.base import BaseStepResult
+
+# Literal type — prevents typos, enables exhaustiveness checking
+ResearchDimension = Literal[
+    "pain_severity",
+    "market_size",
+    "competitors",
+    "demand_evidence",
+    "willingness_to_pay",
+]
+
+RESEARCH_DIMENSIONS: tuple[ResearchDimension, ...] = (
+    "pain_severity",
+    "market_size",
+    "competitors",
+    "demand_evidence",
+    "willingness_to_pay",
+)
+
+
+class DimensionConfidence(BaseModel):
+    """Confidence assessment for a single research dimension."""
+
+    model_config = ConfigDict(frozen=True)
+
+    dimension: ResearchDimension
+    confidence: float = Field(ge=0.0, le=1.0)
+    justification: str
+
+
+class ResearchGapAnalysis(BaseModel):
+    """LLM output identifying gaps in current research.
+
+    Used between research rounds to direct the next collection pass.
+    Not persisted as a step result — ephemeral within the research step.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    overall_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="0.0 = no evidence, 1.0 = strong multi-source evidence",
+    )
+    dimension_scores: list[DimensionConfidence] = Field(min_length=5, max_length=5)
+    weakest_dimensions: list[ResearchDimension] = Field(
+        description="Dimensions with confidence < 0.6, weakest first",
+    )
+    follow_up_queries: list[str] = Field(
+        max_length=5,
+        description="Targeted search queries to fill identified gaps",
+    )
+    follow_up_perplexity_question: str = Field(
+        default="",
+        description="Synthesized question for Perplexity about the weakest gap",
+    )
+    reasoning: str
 
 
 class SearchResult(BaseModel):
@@ -66,3 +124,13 @@ class MarketResearch(BaseStepResult):
     search_results: list[SearchResult] = Field(default_factory=list)
     key_findings: list[str] = Field(default_factory=list)
     research_summary: str = ""
+
+    # Multi-turn research metadata
+    research_rounds_completed: int = Field(
+        default=1,
+        description="Number of research collection rounds performed",
+    )
+    gap_analysis: ResearchGapAnalysis | None = Field(
+        default=None,
+        description="Gap analysis from intermediate round (None if single-round)",
+    )

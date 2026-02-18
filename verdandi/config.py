@@ -98,6 +98,26 @@ class Settings(BaseSettings):
     huey_workers: int = 4
     huey_immediate: bool = False
 
+    # Research settings
+    research_max_rounds: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description=(
+            "Maximum research collection rounds per experiment. "
+            "1 = single pass (backward compatible). "
+            "2 = one initial + one follow-up (recommended)."
+        ),
+    )
+    research_confidence_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "If gap analysis overall_confidence >= this threshold, skip remaining follow-up rounds."
+        ),
+    )
+
     # Redis cache
     redis_url: str = ""  # Empty = cache disabled. e.g. "redis://localhost:6379/0"
     research_cache_ttl_hours: int = 24

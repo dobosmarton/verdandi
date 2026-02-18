@@ -20,7 +20,15 @@ from verdandi.models.idea import (
 )
 from verdandi.models.landing_page import FAQItem, LandingPageContent, Testimonial
 from verdandi.models.mvp import Feature, MVPDefinition
-from verdandi.models.research import Competitor, MarketResearch, SearchResult
+from verdandi.models.research import RESEARCH_DIMENSIONS as RESEARCH_DIMENSIONS
+from verdandi.models.research import (
+    Competitor,
+    DimensionConfidence,
+    MarketResearch,
+    ResearchDimension,
+    ResearchGapAnalysis,
+    SearchResult,
+)
 from verdandi.models.scoring import (
     CouncilMemberVote,
     CouncilResult,
@@ -31,6 +39,7 @@ from verdandi.models.scoring import (
 from verdandi.models.validation import MetricsSnapshot, ValidationDecision, ValidationReport
 
 __all__ = [
+    "RESEARCH_DIMENSIONS",
     "AnalyticsSetup",
     "BaseStepResult",
     "CloudflareDeployment",
@@ -40,6 +49,7 @@ __all__ = [
     "CouncilResult",
     "Decision",
     "DeploymentResult",
+    "DimensionConfidence",
     "DiscoveryType",
     "DistributionResult",
     "DomainInfo",
@@ -56,6 +66,8 @@ __all__ = [
     "PainPoint",
     "PreBuildScore",
     "ProblemReport",
+    "ResearchDimension",
+    "ResearchGapAnalysis",
     "SEOSubmission",
     "ScoreComponent",
     "SearchResult",

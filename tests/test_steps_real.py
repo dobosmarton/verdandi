@@ -25,7 +25,14 @@ from verdandi.models.landing_page import (
     Testimonial,
 )
 from verdandi.models.mvp import Feature, MVPDefinition
-from verdandi.models.research import Competitor, MarketResearch, SearchResult
+from verdandi.models.research import (
+    RESEARCH_DIMENSIONS,
+    Competitor,
+    DimensionConfidence,
+    MarketResearch,
+    ResearchGapAnalysis,
+    SearchResult,
+)
 from verdandi.models.scoring import Decision, PreBuildScore, ScoreComponent
 
 
@@ -38,6 +45,7 @@ def settings() -> Settings:
         log_level="DEBUG",
         log_format="console",
         max_retries=1,
+        research_max_rounds=1,  # default to single-pass for existing tests
     )
 
 
@@ -381,6 +389,320 @@ class TestDeepResearchStep:
 
         with pytest.raises(RuntimeError, match="idea_discovery"):
             step.run(ctx)
+
+    def test_multi_round_executes_followup(
+        self,
+        db: Database,
+        settings: Settings,
+        experiment: Experiment,
+    ) -> None:
+        """With max_rounds=2, a low-confidence gap analysis triggers a second round."""
+        from verdandi.agents.research import (
+            DeepResearchStep,
+            _MarketResearchLLMOutput,
+        )
+        from verdandi.research import RawResearchData
+
+        _seed_idea(db, experiment)
+
+        # Override settings to allow 2 rounds
+        multi_settings = settings.model_copy(update={"research_max_rounds": 2})
+
+        # Round 1 raw data
+        mock_raw_r1 = RawResearchData(
+            tavily_results=[
+                {
+                    "title": "R1",
+                    "url": "https://r1.com",
+                    "content": "Round 1 content",
+                    "score": 0.9,
+                    "published_date": "",
+                }
+            ],
+            sources_used=["tavily"],
+        )
+
+        # Round 2 follow-up raw data (different URL so delta > 0)
+        mock_raw_r2 = RawResearchData(
+            tavily_results=[
+                {
+                    "title": "R2",
+                    "url": "https://r2.com",
+                    "content": "Round 2 content",
+                    "score": 0.85,
+                    "published_date": "",
+                }
+            ],
+            sources_used=["tavily"],
+        )
+
+        # Gap analysis: low confidence → triggers follow-up
+        gap = ResearchGapAnalysis(
+            overall_confidence=0.4,
+            dimension_scores=[
+                DimensionConfidence(dimension=dim, confidence=0.4, justification="Weak")
+                for dim in RESEARCH_DIMENSIONS
+            ],
+            weakest_dimensions=["pain_severity", "market_size"],
+            follow_up_queries=["What is the TAM?", "Who are competitors?"],
+            follow_up_perplexity_question="Analyze TAM for dev tools",
+            reasoning="Need more data.",
+        )
+
+        synthesis_output = _MarketResearchLLMOutput(
+            tam_estimate="$1B",
+            market_growth="15% CAGR",
+            demand_signals=["Strong interest"],
+            competitors=[
+                Competitor(name="CompA", description="Leader", pricing="$49/mo"),
+            ],
+            competitor_gaps=["No AI"],
+            target_audience_size="100K devs",
+            willingness_to_pay="$20-50/mo",
+            common_complaints=["Expensive"],
+            key_findings=["Clear gap"],
+            research_summary="Strong opportunity.",
+        )
+
+        collect_call_count = 0
+
+        def mock_collect(*_args: object, **_kwargs: object) -> RawResearchData:
+            nonlocal collect_call_count
+            collect_call_count += 1
+            if collect_call_count == 1:
+                return mock_raw_r1
+            return mock_raw_r2
+
+        generate_call_count = 0
+
+        def mock_generate(
+            _prompt: object,
+            output_type: type[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal generate_call_count
+            generate_call_count += 1
+            if output_type is ResearchGapAnalysis:
+                return gap
+            return synthesis_output
+
+        with (
+            patch(
+                "verdandi.research.ResearchCollector.collect",
+                side_effect=mock_collect,
+            ),
+            patch(
+                "verdandi.llm.LLMClient.generate",
+                side_effect=mock_generate,
+            ),
+        ):
+            step = DeepResearchStep()
+            ctx = _make_ctx(db, multi_settings, experiment)
+            result = step.run(ctx)
+
+        assert isinstance(result, MarketResearch)
+        assert result.research_rounds_completed == 2
+        assert result.gap_analysis is not None
+        assert result.gap_analysis.overall_confidence == 0.4
+        assert collect_call_count == 2  # round 1 + round 2
+        assert generate_call_count == 2  # gap analysis + synthesis
+        # Search results from both rounds
+        assert len(result.search_results) == 2
+
+    def test_early_exit_on_high_confidence(
+        self,
+        db: Database,
+        settings: Settings,
+        experiment: Experiment,
+    ) -> None:
+        """Gap analysis with high confidence skips follow-up collection."""
+        from verdandi.agents.research import (
+            DeepResearchStep,
+            _MarketResearchLLMOutput,
+        )
+        from verdandi.research import RawResearchData
+
+        _seed_idea(db, experiment)
+
+        multi_settings = settings.model_copy(update={"research_max_rounds": 3})
+
+        mock_raw = RawResearchData(
+            tavily_results=[
+                {
+                    "title": "Good data",
+                    "url": "https://good.com",
+                    "content": "Comprehensive",
+                    "score": 0.95,
+                    "published_date": "",
+                }
+            ],
+            sources_used=["tavily"],
+        )
+
+        # High confidence → should break immediately
+        gap = ResearchGapAnalysis(
+            overall_confidence=0.85,
+            dimension_scores=[
+                DimensionConfidence(dimension=dim, confidence=0.85, justification="Strong")
+                for dim in RESEARCH_DIMENSIONS
+            ],
+            weakest_dimensions=[],
+            follow_up_queries=[],
+            reasoning="All dimensions well covered.",
+        )
+
+        synthesis_output = _MarketResearchLLMOutput(
+            tam_estimate="$2B",
+            market_growth="20% CAGR",
+            demand_signals=["Very strong"],
+            competitors=[],
+            competitor_gaps=[],
+            target_audience_size="500K devs",
+            willingness_to_pay="$30/mo",
+            common_complaints=[],
+            key_findings=["Strong"],
+            research_summary="Excellent opportunity.",
+        )
+
+        collect_call_count = 0
+
+        def mock_collect(*_args: object, **_kwargs: object) -> RawResearchData:
+            nonlocal collect_call_count
+            collect_call_count += 1
+            return mock_raw
+
+        generate_call_count = 0
+
+        def mock_generate(
+            _prompt: object,
+            output_type: type[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal generate_call_count
+            generate_call_count += 1
+            if output_type is ResearchGapAnalysis:
+                return gap
+            return synthesis_output
+
+        with (
+            patch(
+                "verdandi.research.ResearchCollector.collect",
+                side_effect=mock_collect,
+            ),
+            patch(
+                "verdandi.llm.LLMClient.generate",
+                side_effect=mock_generate,
+            ),
+        ):
+            step = DeepResearchStep()
+            ctx = _make_ctx(db, multi_settings, experiment)
+            result = step.run(ctx)
+
+        assert isinstance(result, MarketResearch)
+        # Only 1 collect call (round 1), no follow-up collection
+        assert collect_call_count == 1
+        # 2 generate calls: gap analysis + synthesis (no follow-up collection)
+        assert generate_call_count == 2
+        assert result.gap_analysis is not None
+        assert result.gap_analysis.overall_confidence == 0.85
+
+    def test_no_new_data_stops_early(
+        self,
+        db: Database,
+        settings: Settings,
+        experiment: Experiment,
+    ) -> None:
+        """Follow-up returning same URL as round 1 → delta 0 → stops early."""
+        from verdandi.agents.research import (
+            DeepResearchStep,
+            _MarketResearchLLMOutput,
+        )
+        from verdandi.research import RawResearchData
+
+        _seed_idea(db, experiment)
+
+        multi_settings = settings.model_copy(update={"research_max_rounds": 3})
+
+        # Both rounds return the same URL
+        same_raw = RawResearchData(
+            tavily_results=[
+                {
+                    "title": "Same",
+                    "url": "https://same.com",
+                    "content": "Same content",
+                    "score": 0.9,
+                    "published_date": "",
+                }
+            ],
+            sources_used=["tavily"],
+        )
+
+        gap = ResearchGapAnalysis(
+            overall_confidence=0.3,
+            dimension_scores=[
+                DimensionConfidence(dimension=dim, confidence=0.3, justification="Weak")
+                for dim in RESEARCH_DIMENSIONS
+            ],
+            weakest_dimensions=["pain_severity"],
+            follow_up_queries=["More info about pain points"],
+            follow_up_perplexity_question="What are the pain points?",
+            reasoning="Very weak data.",
+        )
+
+        synthesis_output = _MarketResearchLLMOutput(
+            tam_estimate="$500M",
+            market_growth="10% CAGR",
+            demand_signals=["Some interest"],
+            competitors=[],
+            competitor_gaps=[],
+            target_audience_size="50K",
+            willingness_to_pay="$10/mo",
+            common_complaints=[],
+            key_findings=["Weak signals"],
+            research_summary="Limited opportunity.",
+        )
+
+        collect_call_count = 0
+
+        def mock_collect(*_args: object, **_kwargs: object) -> RawResearchData:
+            nonlocal collect_call_count
+            collect_call_count += 1
+            return same_raw  # same URL every time
+
+        generate_call_count = 0
+
+        def mock_generate(
+            _prompt: object,
+            output_type: type[object],
+            **_kwargs: object,
+        ) -> object:
+            nonlocal generate_call_count
+            generate_call_count += 1
+            if output_type is ResearchGapAnalysis:
+                return gap
+            return synthesis_output
+
+        with (
+            patch(
+                "verdandi.research.ResearchCollector.collect",
+                side_effect=mock_collect,
+            ),
+            patch(
+                "verdandi.llm.LLMClient.generate",
+                side_effect=mock_generate,
+            ),
+        ):
+            step = DeepResearchStep()
+            ctx = _make_ctx(db, multi_settings, experiment)
+            result = step.run(ctx)
+
+        assert isinstance(result, MarketResearch)
+        # 2 collect calls: round 1 + round 2 (which produced no new data)
+        assert collect_call_count == 2
+        # 2 generate calls: gap analysis + synthesis (round 3 never happens)
+        assert generate_call_count == 2
+        # Rounds completed is 2 (we entered round 2 but it returned 0 new)
+        assert result.research_rounds_completed == 2
 
 
 # =====================================================================
