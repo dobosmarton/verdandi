@@ -56,7 +56,7 @@ Key design decisions:
 - **SQLite + WAL mode** for state storage. Huey task queue with a separate SQLite broker for background jobs.
 - **Template-fill for landing pages** — Pre-built HTML + Tailwind templates with `{{TOKEN}}` placeholders. Near-zero failure rate vs. ~15% breakage from LLM-generated full HTML.
 - **structlog** with correlation IDs for request tracing across pipeline steps.
-- **Agent Council** for multi-model scoring — When enabled (`COUNCIL_ENABLED=true`), Step 2 runs the same scoring prompt across Anthropic, OpenAI, and Google models in parallel, then aggregates votes via majority rule.
+- **Agent Council** for multi-model scoring — When enabled (`COUNCIL_ENABLED=true`), Step 2 runs the same scoring prompt across Anthropic, OpenAI, and Google models. Uses a quorum-based early-exit strategy: a random initial quorum of `N//2+1` providers runs in parallel; if consensus is locked (majority can no longer be overturned), remaining providers are skipped. Otherwise reserves are added one-by-one until the decision is final. Votes are aggregated via majority rule with median component scores.
 - **Pluggable research providers** via `ResearchProviderPort` protocol — 6 providers (Tavily, Serper, Exa, Perplexity, HN Algolia, SocialData) run in parallel. Adding a new source requires only a client and a provider class.
 - **Long-term memory** via Qdrant vector DB — Optional semantic dedup and memory using all-MiniLM-L6-v2 embeddings (384-dim). Degrades gracefully: Qdrant -> SQLite Python-loop fallback -> fingerprint-only.
 
@@ -174,7 +174,7 @@ All configuration is via environment variables (loaded from `.env`):
 | `MAX_RETRIES` | `3` | Max retry attempts per step |
 | `SCORE_GO_THRESHOLD` | `70` | Minimum score for GO decision (0-100) |
 | `LLM_MODEL` | `claude-sonnet-4-5-20250929` | Claude model for reasoning |
-| `LLM_MAX_TOKENS` | `4096` | Max output tokens per LLM call |
+| `LLM_MAX_TOKENS` | *(unset — 16384 fallback)* | Max output tokens per LLM call. Leave unset for generous default |
 | `LLM_TEMPERATURE` | `0.7` | LLM temperature |
 | `DATA_DIR` | `./data` | Directory for SQLite databases |
 | `VERDANDI_API_URL` | *(empty)* | Remote API URL — if set, CLI talks to HTTP instead of local SQLite |
@@ -490,7 +490,7 @@ verdandi/
     ├── test_clients.py         # httpx API client tests (respx mocking)
     ├── test_providers.py       # Research provider tests
     ├── test_research.py        # ResearchCollector integration tests
-    ├── test_council.py         # Agent council aggregation tests
+    ├── test_council.py         # Agent council tests (aggregation, parallel execution, consensus)
     ├── test_strategies.py      # Discovery strategy tests
     ├── test_cache.py           # Redis cache tests (fakeredis)
     ├── test_metrics.py         # Prometheus metric tests
