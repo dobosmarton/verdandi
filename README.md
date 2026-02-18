@@ -10,7 +10,7 @@ Verdandi runs a sequential 11-step pipeline for each product experiment:
 
 ```
 Step 0:  Idea Discovery      → Find promising product ideas from market signals
-Step 1:  Deep Research        → Multi-source market research (Tavily, Serper, Exa, Perplexity, HN, Twitter/X)
+Step 1:  Deep Research        → Multi-turn market research with LLM gap analysis (Tavily, Serper, Exa, Perplexity, HN, Twitter/X)
 Step 2:  Pre-Build Scoring    → Quantified GO / NO_GO / ITERATE decision
 Step 3:  MVP Definition       → Product spec, features, pricing, domain suggestions
 Step 4:  Landing Page Gen     → HTML + Tailwind CSS from template + LLM-generated copy
@@ -57,6 +57,7 @@ Key design decisions:
 - **Template-fill for landing pages** — Pre-built HTML + Tailwind templates with `{{TOKEN}}` placeholders. Near-zero failure rate vs. ~15% breakage from LLM-generated full HTML.
 - **structlog** with correlation IDs for request tracing across pipeline steps.
 - **Agent Council** for multi-model scoring — When enabled (`COUNCIL_ENABLED=true`), Step 2 runs the same scoring prompt across Anthropic, OpenAI, and Google models. Uses a quorum-based early-exit strategy: a random initial quorum of `N//2+1` providers runs in parallel; if consensus is locked (majority can no longer be overturned), remaining providers are skipped. Otherwise reserves are added one-by-one until the decision is final. Votes are aggregated via majority rule with median component scores.
+- **Multi-turn research** — Step 1 performs iterative collection: a broad initial pass across all providers, then an LLM gap analysis scores confidence across 5 dimensions (pain severity, market size, competitors, demand evidence, willingness to pay). If evidence is weak, targeted follow-up queries run through Tavily + Perplexity only. Stops early when confidence exceeds the threshold, no queries are generated, or follow-ups return no new data.
 - **Pluggable research providers** via `ResearchProviderPort` protocol — 6 providers (Tavily, Serper, Exa, Perplexity, HN Algolia, SocialData) run in parallel. Adding a new source requires only a client and a provider class.
 - **Long-term memory** via Qdrant vector DB — Optional semantic dedup and memory using all-MiniLM-L6-v2 embeddings (384-dim). Degrades gracefully: Qdrant -> SQLite Python-loop fallback -> fingerprint-only.
 
@@ -173,6 +174,8 @@ All configuration is via environment variables (loaded from `.env`):
 | `REQUIRE_HUMAN_REVIEW` | `true` | Pause pipeline at Step 5 for approval |
 | `MAX_RETRIES` | `3` | Max retry attempts per step |
 | `SCORE_GO_THRESHOLD` | `70` | Minimum score for GO decision (0-100) |
+| `RESEARCH_MAX_ROUNDS` | `2` | Max research collection rounds (1 = single-pass, 2 = initial + follow-up) |
+| `RESEARCH_CONFIDENCE_THRESHOLD` | `0.7` | Skip follow-up rounds if gap analysis confidence >= this |
 | `LLM_MODEL` | `claude-sonnet-4-5-20250929` | Claude model for reasoning |
 | `LLM_MAX_TOKENS` | *(unset — 16384 fallback)* | Max output tokens per LLM call. Leave unset for generous default |
 | `LLM_TEMPERATURE` | `0.7` | LLM temperature |
@@ -363,7 +366,7 @@ Each step produces a frozen Pydantic model stored as JSON in SQLite:
 | Step | Output Model | Key Fields |
 |------|-------------|------------|
 | 0 - Idea Discovery | `IdeaCandidate` | title, one_liner, problem_statement, target_audience, pain_points, existing_solutions |
-| 1 - Deep Research | `MarketResearch` | tam_estimate, competitors, demand_signals, willingness_to_pay, key_findings |
+| 1 - Deep Research | `MarketResearch` | tam_estimate, competitors, demand_signals, willingness_to_pay, key_findings, research_rounds_completed, gap_analysis |
 | 2 - Scoring | `PreBuildScore` | total_score (0-100), decision (GO/NO_GO/ITERATE), components, risks, opportunities |
 | 3 - MVP Definition | `MVPDefinition` | product_name, tagline, features, pricing_model, cta_text, domain_suggestions |
 | 4 - Landing Page | `LandingPageContent` | headline, subheadline, features, testimonials, FAQ, rendered_html |
@@ -460,7 +463,7 @@ verdandi/
 │   │   ├── base.py             # BaseStepResult
 │   │   ├── experiment.py       # Experiment + ExperimentStatus enum
 │   │   ├── idea.py             # IdeaCandidate, PainPoint, DiscoveryType
-│   │   ├── research.py         # MarketResearch, Competitor, SearchResult
+│   │   ├── research.py         # MarketResearch, Competitor, SearchResult, ResearchGapAnalysis, DimensionConfidence
 │   │   ├── scoring.py          # PreBuildScore, ScoreComponent, Decision, CouncilResult
 │   │   ├── mvp.py              # MVPDefinition, Feature
 │   │   ├── landing_page.py     # LandingPageContent, Testimonial, FAQItem
@@ -496,8 +499,9 @@ verdandi/
     ├── test_metrics.py         # Prometheus metric tests
     ├── test_embeddings.py      # Embedding service tests
     ├── test_memory_long_term.py  # Qdrant long-term memory tests
-    ├── test_memory_working.py  # Working memory (ResearchSession) tests
-    ├── test_steps_real.py      # Real step integration tests
+    ├── test_memory_working.py  # Working memory (ResearchSession + ingest_with_delta) tests
+    ├── test_research_gap.py    # Multi-turn research helpers + gap analysis model tests
+    ├── test_steps_real.py      # Real step integration tests (incl. multi-turn research scenarios)
     ├── test_llm_integration.py # LLM client tests
     ├── test_alembic.py         # Migration tests
     └── test_api/               # API endpoint tests
