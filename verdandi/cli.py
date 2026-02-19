@@ -656,6 +656,25 @@ def check(ctx: click.Context) -> None:
         click.echo(f"  {name:16s} {status}")
 
 
+@cli.command()
+@click.pass_context
+def tui(ctx: click.Context) -> None:
+    """Launch interactive experiment browser."""
+    try:
+        from verdandi.tui import VerdandiApp
+    except ImportError:
+        click.echo("TUI requires: pip install -e '.[tui]'", err=True)
+        sys.exit(1)
+
+    settings: Settings = ctx.obj["settings"]
+    backend = _get_backend(settings, ctx.obj.get("remote_url"))
+    try:
+        app = VerdandiApp(backend=backend)
+        app.run()
+    finally:
+        backend.close()
+
+
 @cli.group()
 @click.pass_context
 def cache(ctx: click.Context) -> None:
