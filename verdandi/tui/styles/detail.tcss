@@ -1,0 +1,15 @@
+/* Detail screen styles */
+
+#detail-scroll {
+    height: 1fr;
+    padding: 1 2;
+}
+
+.section {
+    margin-bottom: 1;
+}
+
+.section-empty {
+    margin-bottom: 1;
+    color: $text-muted;
+}

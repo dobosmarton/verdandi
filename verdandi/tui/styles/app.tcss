@@ -1,0 +1,25 @@
+/* Global Verdandi TUI styles */
+
+Screen {
+    background: $surface;
+}
+
+Header {
+    dock: top;
+    background: $primary;
+    color: $text;
+}
+
+Footer {
+    dock: bottom;
+}
+
+/* List screen: DataTable fills the screen */
+#experiments {
+    height: 1fr;
+}
+
+DataTable > .datatable--cursor {
+    background: $accent;
+    color: $text;
+}

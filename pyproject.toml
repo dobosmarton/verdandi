@@ -28,6 +28,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tui = [
+    "textual>=3.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
@@ -77,6 +80,7 @@ ignore = [
 "verdandi/llm.py" = ["ARG002"]  # generate_text temperature/max_tokens passthrough TBD
 "verdandi/memory/embeddings.py" = ["ARG002"]  # is_available check imports without direct use
 "verdandi/cli.py" = ["ARG001"]  # Click context/options used indirectly
+"verdandi/tui/**/*.py" = ["ARG001"]  # Textual event handlers have unused params
 "verdandi/api/routes/*.py" = ["TC001"]  # Annotated deps must be runtime imports for FastAPI DI
 "alembic/**/*.py" = ["UP", "I", "N", "TCH", "ARG"]  # Generated migration code
 
