@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 from verdandi.clients.exa import ExaSearchResult
+from verdandi.clients.firecrawl import FirecrawlPage
 from verdandi.clients.hn_algolia import HNComment, HNStory
 from verdandi.clients.perplexity import PerplexityDeepResult, PerplexityResult
 from verdandi.clients.serper import SerperRedditResult, SerperResult, SerperTwitterResult
@@ -56,6 +57,7 @@ class CollectionConfig:
     exa_similar_url: str = ""
     tavily_research_query: str = ""
     use_perplexity_deep: bool = False
+    competitor_urls: list[str] = field(default_factory=list)
 
 
 class RawResearchData(BaseModel):
@@ -74,6 +76,7 @@ class RawResearchData(BaseModel):
     perplexity_deep_answer: PerplexityDeepResult | None = None
     hn_stories: list[HNStory] = Field(default_factory=list)
     hn_comments: list[HNComment] = Field(default_factory=list)
+    firecrawl_pages: list[FirecrawlPage] = Field(default_factory=list)
     sources_used: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
@@ -91,6 +94,7 @@ class RawResearchData(BaseModel):
             or self.perplexity_answer
             or self.hn_stories
             or self.hn_comments
+            or self.firecrawl_pages
         )
 
 
@@ -121,6 +125,7 @@ def _merge_results(partials: list[RawResearchData]) -> RawResearchData:
         ),
         hn_stories=[r for p in partials for r in p.hn_stories],
         hn_comments=[r for p in partials for r in p.hn_comments],
+        firecrawl_pages=[r for p in partials for r in p.firecrawl_pages],
         sources_used=[s for p in partials for s in p.sources_used],
         errors=[e for p in partials for e in p.errors],
     )
@@ -229,6 +234,7 @@ class ResearchCollector:
         exa_similar_url: str = "",
         tavily_research_query: str = "",
         use_perplexity_deep: bool = False,
+        competitor_urls: list[str] | None = None,
     ) -> RawResearchData:
         """Collect research data from all available providers in parallel.
 
@@ -245,6 +251,8 @@ class ResearchCollector:
                 deep research mode (returns summary + sources + follow-ups).
             use_perplexity_deep: If True, use Perplexity Deep Research
                 (sonar-deep-research) instead of basic sonar for richer analysis.
+            competitor_urls: Optional list of competitor website URLs for
+                Firecrawl to scrape (pricing, features, about pages).
 
         Returns:
             RawResearchData with results from all sources that responded.
@@ -262,6 +270,7 @@ class ResearchCollector:
             exa_similar_url=exa_similar_url,
             tavily_research_query=tavily_research_query,
             use_perplexity_deep=use_perplexity_deep,
+            competitor_urls=competitor_urls or [],
         )
 
         available = [p for p in self._providers if p.is_available]
@@ -419,6 +428,22 @@ def format_research_context(raw: RawResearchData) -> str:
             comment_text = hc["comment_text"][:400] if hc.get("comment_text") else ""
             lines.append(f"- **{hc['author']}** (in: {hc['story_title']}):")
             lines.append(f'  "{comment_text}"')
+        sections.append("\n".join(lines))
+
+    # Firecrawl competitor pages
+    if raw.firecrawl_pages:
+        lines = ["## Competitor Deep Dive (Firecrawl)"]
+        for page in raw.firecrawl_pages:
+            lines.append(f"### {page['title'] or page['url']}")
+            lines.append(f"**URL**: {page['url']}")
+            if page["description"]:
+                lines.append(f"**Description**: {page['description']}")
+            lines.append(f"**Word count**: {page['word_count']}")
+            # Truncate markdown to avoid overwhelming the LLM context
+            md = page["markdown"]
+            if len(md) > 2000:
+                md = md[:2000] + "\n\n[... truncated]"
+            lines.append(f"\n{md}")
         sections.append("\n".join(lines))
 
     # Sources summary

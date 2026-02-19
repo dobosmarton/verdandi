@@ -31,7 +31,9 @@ logger = structlog.get_logger()
 _MAX_FOLLOWUP_QUERIES: int = 5
 
 # Providers used for targeted follow-up rounds (cheaper + question-friendly)
-_FOLLOWUP_PROVIDER_NAMES: frozenset[str] = frozenset({"tavily", "perplexity"})
+# Firecrawl is included here because it activates only when competitor_urls
+# are provided — which happens in follow-up rounds, not Round 1.
+_FOLLOWUP_PROVIDER_NAMES: frozenset[str] = frozenset({"tavily", "perplexity", "firecrawl"})
 
 _GAP_ANALYSIS_SYSTEM: str = (
     "You are a market research quality assessor. Your job is to identify "
@@ -190,6 +192,60 @@ def _extract_tavily_followups(raw: RawResearchData) -> list[str]:
     return []
 
 
+def _extract_competitor_urls(raw: RawResearchData) -> list[str]:
+    """Extract unique competitor website URLs from research results.
+
+    Looks at Tavily, Serper, and Exa results for non-social, non-search
+    domain URLs that likely represent competitor products.
+    """
+    skip_domains = frozenset(
+        {
+            "reddit.com",
+            "news.ycombinator.com",
+            "x.com",
+            "twitter.com",
+            "github.com",
+            "youtube.com",
+            "medium.com",
+            "wikipedia.org",
+            "linkedin.com",
+            "facebook.com",
+            "google.com",
+            "amazon.com",
+        }
+    )
+
+    seen_domains: set[str] = set()
+    urls: list[str] = []
+
+    def _maybe_add(url: str) -> None:
+        if not url:
+            return
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower().removeprefix("www.")
+        if not domain:
+            return
+        # Skip social/noise domains and already-seen domains
+        if any(domain.endswith(sd) for sd in skip_domains):
+            return
+        if domain in seen_domains:
+            return
+        seen_domains.add(domain)
+        # Use the root URL for mapping
+        urls.append(f"{parsed.scheme}://{parsed.netloc}")
+
+    for tr in raw.tavily_results:
+        _maybe_add(tr.get("url", ""))
+    for sr in raw.serper_results:
+        _maybe_add(sr.get("link", ""))
+    for er in raw.exa_results:
+        _maybe_add(er.get("url", ""))
+
+    return urls
+
+
 def _build_search_results(raw: RawResearchData) -> list[SearchResult]:
     """Build SearchResult list from raw API data (NOT LLM-generated)."""
     results: list[SearchResult] = [
@@ -223,6 +279,17 @@ def _build_search_results(raw: RawResearchData) -> list[SearchResult]:
             relevance_score=er["score"],
         )
         for er in raw.exa_results
+    )
+
+    results.extend(
+        SearchResult(
+            title=fp["title"] or fp["url"],
+            url=fp["url"],
+            snippet=fp["description"][:300] if fp["description"] else fp["markdown"][:300],
+            source="firecrawl",
+            relevance_score=0.0,
+        )
+        for fp in raw.firecrawl_pages
     )
 
     return results
@@ -312,11 +379,15 @@ class DeepResearchStep(AbstractStep):
         session.ingest(raw_data)
         tavily_followups = _extract_tavily_followups(raw_data)
 
+        # Extract competitor URLs for Firecrawl deep-dive in follow-up rounds
+        competitor_urls = _extract_competitor_urls(session.to_raw())
+
         logger.info(
             "Round 1 collection complete",
             experiment_id=ctx.experiment.id,
             total_results=session.total_results,
             tavily_followups_available=len(tavily_followups),
+            competitor_urls_found=len(competitor_urls),
         )
 
         # Track the latest gap analysis and round count
@@ -388,6 +459,7 @@ class DeepResearchStep(AbstractStep):
                 exa_similar_url="",
                 tavily_research_query="",
                 use_perplexity_deep=False,
+                competitor_urls=competitor_urls,
             )
 
             # Ingest and check if we got new data

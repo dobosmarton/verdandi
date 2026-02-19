@@ -641,6 +641,7 @@ def check(ctx: click.Context) -> None:
         "Serper": bool(settings.serper_api_key),
         "Exa": bool(settings.exa_api_key),
         "Perplexity": bool(settings.perplexity_api_key),
+        "Firecrawl": bool(settings.firecrawl_api_key),
         "Porkbun": bool(settings.porkbun_api_key),
         "Cloudflare": bool(settings.cloudflare_api_token),
         "Umami": bool(settings.umami_api_key),

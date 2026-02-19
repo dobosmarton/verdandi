@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     exa_api_key: str = ""
     perplexity_api_key: str = ""
     socialdata_api_key: str = ""
+    firecrawl_api_key: str = ""
 
     # Deployment APIs (optional)
     porkbun_api_key: str = ""

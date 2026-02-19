@@ -19,6 +19,7 @@ from verdandi.research import RawResearchData, format_research_context
 
 if TYPE_CHECKING:
     from verdandi.clients.exa import ExaSearchResult
+    from verdandi.clients.firecrawl import FirecrawlPage
     from verdandi.clients.hn_algolia import HNComment, HNStory
     from verdandi.clients.perplexity import PerplexityResult
     from verdandi.clients.serper import SerperRedditResult, SerperResult, SerperTwitterResult
@@ -57,6 +58,7 @@ class ResearchSession:
         self._perplexity: PerplexityResult | None = None
         self._hn_stories: list[HNStory] = []
         self._hn_comments: list[HNComment] = []
+        self._firecrawl: list[FirecrawlPage] = []
         self._sources_used: list[str] = []
         self._errors: list[str] = []
 
@@ -155,6 +157,15 @@ class ResearchSession:
                 self._seen_hn_ids.add(obj_id)
             self._hn_comments.append(comment)
 
+        # Firecrawl pages — dedup by URL
+        for fc_page in raw.firecrawl_pages:
+            url = fc_page.get("url", "")
+            if url and url in self._seen_urls:
+                continue
+            if url:
+                self._seen_urls.add(url)
+            self._firecrawl.append(fc_page)
+
         # Merge sources and errors (dedup sources)
         for src in raw.sources_used:
             if src not in self._sources_used:
@@ -171,6 +182,7 @@ class ResearchSession:
             exa=len(self._exa),
             hn_stories=len(self._hn_stories),
             hn_comments=len(self._hn_comments),
+            firecrawl=len(self._firecrawl),
         )
 
     @property
@@ -186,6 +198,7 @@ class ResearchSession:
             or self._perplexity
             or self._hn_stories
             or self._hn_comments
+            or self._firecrawl
         )
 
     def to_raw(self) -> RawResearchData:
@@ -200,6 +213,7 @@ class ResearchSession:
             perplexity_answer=self._perplexity,
             hn_stories=self._hn_stories,
             hn_comments=self._hn_comments,
+            firecrawl_pages=self._firecrawl,
             sources_used=self._sources_used,
             errors=self._errors,
         )
@@ -249,5 +263,6 @@ class ResearchSession:
             + len(self._exa)
             + len(self._hn_stories)
             + len(self._hn_comments)
+            + len(self._firecrawl)
             + (1 if self._perplexity else 0)
         )

@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from verdandi.providers.exa import ExaProvider
+from verdandi.providers.firecrawl import FirecrawlProvider
 from verdandi.providers.hn import HNProvider
 from verdandi.providers.perplexity import PerplexityProvider
 from verdandi.providers.serper import SerperProvider
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ExaProvider",
+    "FirecrawlProvider",
     "HNProvider",
     "PerplexityProvider",
     "SerperProvider",
@@ -46,5 +48,6 @@ def default_providers(settings: Settings) -> list[ResearchProviderPort]:
         ExaProvider(settings),
         PerplexityProvider(settings),
         SocialDataProvider(settings),
+        FirecrawlProvider(settings),
         HNProvider(),
     ]

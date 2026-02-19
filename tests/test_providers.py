@@ -34,6 +34,7 @@ def settings() -> Settings:
         exa_api_key="exa-test",
         perplexity_api_key="pplx-test",
         socialdata_api_key="sd-test",
+        firecrawl_api_key="fc-test",
         redis_url="",
         require_human_review=False,
         data_dir="/tmp/verdandi-test",
@@ -443,15 +444,16 @@ class TestSocialDataProvider:
 
 
 class TestDefaultProviders:
-    def test_creates_all_six_providers(self, settings: Settings) -> None:
+    def test_creates_all_seven_providers(self, settings: Settings) -> None:
         from verdandi.providers import default_providers
 
         providers = default_providers(settings)
-        assert len(providers) == 6
+        assert len(providers) == 7
         names = [p.name for p in providers]
         assert "tavily" in names
         assert "serper" in names
         assert "exa" in names
         assert "perplexity" in names
         assert "socialdata" in names
+        assert "firecrawl" in names
         assert "hn_algolia" in names
