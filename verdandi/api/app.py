@@ -9,7 +9,7 @@ import structlog
 from fastapi import FastAPI
 
 from verdandi.api.middleware import CorrelationIdMiddleware, add_exception_handlers
-from verdandi.api.routes import actions, experiments, reservations, reviews, steps, system
+from verdandi.api.routes import actions, analytics, experiments, reservations, reviews, steps, system
 from verdandi.config import Settings
 from verdandi.db import Database
 from verdandi.logging import configure_logging
@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(reviews.router, prefix=prefix)
     app.include_router(reservations.router, prefix=prefix)
     app.include_router(actions.router, prefix=prefix)
+    app.include_router(analytics.router, prefix=prefix)
 
     return app
 

@@ -726,6 +726,126 @@ def cache_purge(ctx: click.Context) -> None:
     click.echo(f"Purged {count} cache entries.")
 
 
+@cli.group()
+@click.pass_context
+def analytics(ctx: click.Context) -> None:
+    """Historical analytics: GO rates, score trends, provider reliability."""
+
+
+@analytics.command("overview")
+@click.option("--from", "date_from", type=str, default=None, metavar="YYYY-MM-DD", help="Start date")
+@click.option("--to", "date_to", type=str, default=None, metavar="YYYY-MM-DD", help="End date")
+@click.pass_context
+def analytics_overview(ctx: click.Context, date_from: str | None, date_to: str | None) -> None:
+    """Show total experiments, GO rate, and average score."""
+    from verdandi.analytics import get_overview
+
+    settings = ctx.obj["settings"]
+    db = _get_db(settings)
+    try:
+        result = get_overview(db, date_from=date_from, date_to=date_to)
+        click.echo(f"  Total experiments   : {result.total_experiments}")
+        click.echo(f"  GO rate             : {result.go_rate:.1%}")
+        if result.avg_score is not None:
+            click.echo(f"  Average score       : {result.avg_score:.1f}/100")
+        else:
+            click.echo("  Average score       : (no scored experiments)")
+        click.echo(f"  Experiments scored  : {result.experiments_with_score}")
+        click.echo("  By status:")
+        for status, cnt in sorted(result.by_status.items()):
+            click.echo(f"    {status:<20s}: {cnt}")
+    finally:
+        db.close()
+
+
+@analytics.command("providers")
+@click.option("--from", "date_from", type=str, default=None, metavar="YYYY-MM-DD", help="Start date")
+@click.option("--to", "date_to", type=str, default=None, metavar="YYYY-MM-DD", help="End date")
+@click.pass_context
+def analytics_providers(ctx: click.Context, date_from: str | None, date_to: str | None) -> None:
+    """Show per-provider research API reliability statistics."""
+    from verdandi.analytics import get_provider_analytics
+
+    settings = ctx.obj["settings"]
+    db = _get_db(settings)
+    try:
+        result = get_provider_analytics(db, date_from=date_from, date_to=date_to)
+        if not result.providers:
+            click.echo("  No provider data available (run some experiments first).")
+            return
+        click.echo(f"  {'Provider':<16s} {'Calls':>6s}  {'OK':>6s}  {'Fail':>6s}  {'Rate':>7s}")
+        click.echo(f"  {'-' * 16}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 7}")
+        for p in result.providers:
+            click.echo(
+                f"  {p.provider:<16s} {p.total_calls:>6d}  {p.successful_calls:>6d}  "
+                f"{p.failed_calls:>6d}  {p.success_rate:>6.1%}"
+            )
+    finally:
+        db.close()
+
+
+@analytics.command("scores")
+@click.option("--from", "date_from", type=str, default=None, metavar="YYYY-MM-DD", help="Start date")
+@click.option("--to", "date_to", type=str, default=None, metavar="YYYY-MM-DD", help="End date")
+@click.pass_context
+def analytics_scores(ctx: click.Context, date_from: str | None, date_to: str | None) -> None:
+    """Show score distribution histogram and daily trend."""
+    from verdandi.analytics import get_score_analytics
+
+    settings = ctx.obj["settings"]
+    db = _get_db(settings)
+    try:
+        result = get_score_analytics(db, date_from=date_from, date_to=date_to)
+
+        click.echo("  Score Distribution")
+        for bucket in result.distribution:
+            bar = "\u2588" * bucket.count
+            click.echo(f"    {bucket.bucket_label:>7s}  {bucket.count:>4d}  {bar}")
+
+        click.echo("\n  Decision Counts")
+        for decision, cnt in sorted(result.decision_counts.items()):
+            click.echo(f"    {decision:<12s}: {cnt}")
+
+        if result.trend:
+            click.echo(f"\n  Daily Trend ({len(result.trend)} days)")
+            for pt in result.trend[-10:]:
+                click.echo(f"    {pt.date}  avg={pt.avg_score:>5.1f}  n={pt.count}")
+        else:
+            click.echo("\n  No trend data available.")
+    finally:
+        db.close()
+
+
+@analytics.command("pipeline")
+@click.option("--from", "date_from", type=str, default=None, metavar="YYYY-MM-DD", help="Start date")
+@click.option("--to", "date_to", type=str, default=None, metavar="YYYY-MM-DD", help="End date")
+@click.pass_context
+def analytics_pipeline(ctx: click.Context, date_from: str | None, date_to: str | None) -> None:
+    """Show step completion counts and pipeline throughput."""
+    from verdandi.analytics import get_pipeline_analytics
+
+    settings = ctx.obj["settings"]
+    db = _get_db(settings)
+    try:
+        result = get_pipeline_analytics(db, date_from=date_from, date_to=date_to)
+        click.echo(f"  Total experiments   : {result.total_experiments}")
+        click.echo(f"  Completed           : {result.completed_experiments}")
+        click.echo(f"  Completion rate     : {result.completion_rate:.1%}")
+
+        if result.steps:
+            click.echo(f"\n  {'Step':<32s}  {'#':>3s}  {'Runs':>6s}  {'Exps':>6s}")
+            click.echo(f"  {'-' * 32}  {'-' * 3}  {'-' * 6}  {'-' * 6}")
+            for s in result.steps:
+                click.echo(
+                    f"  {s.step_name:<32s}  {s.step_number:>3d}  {s.total_executions:>6d}  "
+                    f"{s.experiments_with_step:>6d}"
+                )
+        else:
+            click.echo("  No step data available (run some experiments first).")
+    finally:
+        db.close()
+
+
 @cli.command()
 @click.option("--workers", default=4, type=int, help="Number of worker processes")
 @click.pass_context
