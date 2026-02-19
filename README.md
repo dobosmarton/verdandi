@@ -78,6 +78,9 @@ cd verdandi
 # Install in development mode
 pip install -e ".[dev]"
 
+# Optional: install interactive TUI
+pip install -e ".[dev,tui]"
+
 # Copy and configure environment
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY at minimum
@@ -101,6 +104,9 @@ verdandi run 2 --dry-run -v
 verdandi inspect 2
 verdandi inspect 2 --log
 verdandi inspect 2 --step scoring
+
+# Or browse experiments interactively
+verdandi tui
 ```
 
 ### Real Pipeline Run
@@ -237,6 +243,7 @@ verdandi reservations [--active-only/--all]      # Show topic reservations
 verdandi cache ping                              # Check Redis connectivity
 verdandi cache stats                             # Show research cache statistics
 verdandi cache purge                             # Delete all research cache entries
+verdandi tui                                     # Interactive experiment browser (requires [tui] extra)
 verdandi serve [--host H] [--port P]             # Start the FastAPI API server
 verdandi worker [--workers N]                    # Start Huey task queue consumer
 verdandi enqueue discover [--max-ideas N]        # Enqueue discovery job to worker
@@ -245,6 +252,37 @@ verdandi enqueue run <ID> [--dry-run]            # Enqueue pipeline run to worke
 
 Add `-v` / `--verbose` to any command for debug-level logging.
 Add `--remote <URL>` to any command to target a remote API server (see [Remote Mode](#remote-mode)).
+
+## Interactive TUI
+
+An interactive terminal browser for experiments, combining `ls` + `report` into a single navigable interface. Requires the optional `[tui]` extra:
+
+```bash
+pip install -e ".[tui]"
+verdandi tui
+```
+
+**List view** — all experiments in a navigable table:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate rows |
+| `Enter` | Open experiment details |
+| `r` | Refresh the list |
+| `q` | Quit |
+
+**Detail view** — scrollable research report (same data as `verdandi report`):
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Scroll |
+| `f` | Toggle full / truncated display |
+| `Escape` | Back to list |
+| `q` | Quit |
+
+Sections shown: header, idea, market research, competitors table, scoring breakdown, completed steps. Sections for steps not yet run display a placeholder.
+
+Works with `--remote` for browsing experiments on a remote API server.
 
 ## REST API
 
@@ -480,6 +518,11 @@ verdandi/
 │   │   ├── deps.py             # Dependency injection (DbDep, SettingsDep)
 │   │   ├── schemas.py          # Pydantic request/response schemas
 │   │   └── routes/             # 6 route modules (experiments, steps, reviews, actions, system, reservations)
+│   ├── tui/                    # Interactive terminal browser (optional: [tui] extra)
+│   │   ├── app.py              # Textual App subclass
+│   │   ├── data.py             # Data bridge: CliBackend → display dataclasses
+│   │   ├── screens/            # list_screen.py, detail_screen.py
+│   │   └── styles/             # app.tcss, detail.tcss
 │   └── templates/
 │       └── landing_v1.html     # Tailwind CDN template with {{TOKEN}} placeholders
 └── tests/
@@ -504,6 +547,7 @@ verdandi/
     ├── test_steps_real.py      # Real step integration tests (incl. multi-turn research scenarios)
     ├── test_llm_integration.py # LLM client tests
     ├── test_alembic.py         # Migration tests
+    ├── test_tui/               # TUI data layer tests
     └── test_api/               # API endpoint tests
         ├── conftest.py         # FastAPI test client fixtures
         ├── test_experiments.py
