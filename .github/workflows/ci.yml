@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,tui]"
 
       - name: Ruff check
         run: ruff check verdandi/ tests/
@@ -35,7 +35,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,tui]"
 
       - name: mypy --strict
         run: python -m mypy verdandi/ --strict
@@ -50,7 +50,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,tui]"
 
       - name: Run tests
         run: python -m pytest tests/ -v

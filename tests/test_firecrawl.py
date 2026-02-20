@@ -226,8 +226,16 @@ class TestFirecrawlClient:
                 json={
                     "success": True,
                     "links": [
-                        {"url": "https://comp.com/pricing", "title": "Pricing", "description": "Plans"},
-                        {"url": "https://comp.com/features", "title": "Features", "description": ""},
+                        {
+                            "url": "https://comp.com/pricing",
+                            "title": "Pricing",
+                            "description": "Plans",
+                        },
+                        {
+                            "url": "https://comp.com/features",
+                            "title": "Features",
+                            "description": "",
+                        },
                         {"url": "https://comp.com/about", "title": "About", "description": ""},
                     ],
                 },
@@ -285,7 +293,11 @@ class TestFirecrawlClient:
                 json={
                     "success": True,
                     "links": [
-                        {"url": f"https://comp.com/page-{i}", "title": f"Page {i}", "description": ""}
+                        {
+                            "url": f"https://comp.com/page-{i}",
+                            "title": f"Page {i}",
+                            "description": "",
+                        }
                         for i in range(100)
                     ],
                 },
