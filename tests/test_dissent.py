@@ -428,9 +428,16 @@ class TestDissentSettings:
         assert s.dissent_max_rounds == 3
         assert s.dissent_dimension_threshold == 40
 
-    def test_dissent_threshold_bounds(self) -> None:
-        with pytest.raises(Exception):  # noqa: B017
-            _dissent_settings(dissent_dimension_threshold=5)  # below ge=10
-
-        with pytest.raises(Exception):  # noqa: B017
-            _dissent_settings(dissent_dimension_threshold=60)  # above le=50
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("dissent_dimension_threshold", 5),  # below ge=10
+            ("dissent_dimension_threshold", 60),  # above le=50
+            ("dissent_max_rounds", -1),  # below ge=0
+            ("dissent_max_rounds", 4),  # above le=3
+        ],
+        ids=["threshold-too-low", "threshold-too-high", "rounds-too-low", "rounds-too-high"],
+    )
+    def test_dissent_settings_rejects_out_of_bounds(self, field: str, value: int) -> None:
+        with pytest.raises(ValidationError):
+            _dissent_settings(**{field: value})
