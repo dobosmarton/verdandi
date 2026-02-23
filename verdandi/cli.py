@@ -538,6 +538,36 @@ def report(ctx: click.Context, experiment_id: int, full: bool) -> None:
                         for vc in vote.components:
                             out(f"      {vc.name:<24s}{vc.score:>3d}/100")
 
+            # --- DISSENT ANALYSIS section ---
+            if score.dissent_analysis and score.dissent_analysis.dissent_detected:
+                da = score.dissent_analysis
+                flip_tag = " [DECISION FLIPPED]" if da.decision_flipped else ""
+                out(f"\n  Dissent Analysis{flip_tag}")
+                out(f"  {_SINGLE_LINE}")
+                out(
+                    f"    Score: {da.initial_score} -> {da.final_score}  "
+                    f"({len(da.resolution_rounds)} resolution round(s))"
+                )
+
+                if da.dimension_dissents:
+                    out("\n    Contested Dimensions:")
+                    for dd in da.dimension_dissents:
+                        scores_str = ", ".join(
+                            f"{p}: {s}" for p, s in dd.scores_by_provider.items()
+                        )
+                        out(f"      {dd.dimension:<24s}spread: {dd.spread}  ({scores_str})")
+
+                for rr in da.resolution_rounds:
+                    changed_tag = " [decision changed]" if rr.decision_changed else ""
+                    out(
+                        f"\n    Round {rr.round_number}: "
+                        f"{rr.score_before} -> {rr.score_after}"
+                        f"  ({rr.new_sources_count} new sources){changed_tag}"
+                    )
+                    if full:
+                        for q in rr.followup_queries:
+                            out(f"      Q: {q}")
+
         # --- Footer ---
         out(f"\n  {_DOUBLE_LINE}\n")
 

@@ -55,6 +55,45 @@ class CouncilResult(BaseModel):
     aggregated_opportunities: list[str] = Field(default_factory=list)
 
 
+class DimensionDissent(BaseModel):
+    """A single scoring dimension where council members disagreed."""
+
+    model_config = ConfigDict(frozen=True)
+
+    dimension: str
+    scores_by_provider: dict[str, int]
+    spread: int
+    median_score: int
+    reasoning_excerpts: list[str] = Field(default_factory=list)
+
+
+class DissentResolutionRound(BaseModel):
+    """Record of one follow-up research + re-score cycle."""
+
+    model_config = ConfigDict(frozen=True)
+
+    round_number: int
+    contested_dimensions: list[str]
+    followup_queries: list[str]
+    new_sources_count: int
+    score_before: int
+    score_after: int
+    decision_changed: bool
+
+
+class DissentAnalysis(BaseModel):
+    """Full dissent analysis attached to PreBuildScore."""
+
+    model_config = ConfigDict(frozen=True)
+
+    dissent_detected: bool = False
+    dimension_dissents: list[DimensionDissent] = Field(default_factory=list)
+    resolution_rounds: list[DissentResolutionRound] = Field(default_factory=list)
+    decision_flipped: bool = False
+    initial_score: int = 0
+    final_score: int = 0
+
+
 class PreBuildScore(BaseStepResult):
     """Output of Step 2: quantified go/no-go decision."""
 
@@ -67,6 +106,7 @@ class PreBuildScore(BaseStepResult):
     risks: list[str] = Field(default_factory=list)
     opportunities: list[str] = Field(default_factory=list)
     council_votes: list[CouncilMemberVote] = Field(default_factory=list)
+    dissent_analysis: DissentAnalysis | None = None
 
     @classmethod
     def default_components(cls) -> list[ScoreComponent]:

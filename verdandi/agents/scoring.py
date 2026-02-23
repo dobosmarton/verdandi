@@ -13,7 +13,15 @@ from pydantic import BaseModel, ConfigDict
 
 from verdandi.agents.base import AbstractStep, StepContext, register_step
 from verdandi.models.idea import DiscoveryType
-from verdandi.models.scoring import CouncilMemberVote, Decision, PreBuildScore, ScoreComponent
+from verdandi.models.scoring import (
+    CouncilMemberVote,
+    Decision,
+    DimensionDissent,
+    DissentAnalysis,
+    DissentResolutionRound,
+    PreBuildScore,
+    ScoreComponent,
+)
 
 if TYPE_CHECKING:
     from verdandi.models.idea import IdeaCandidate
@@ -352,7 +360,7 @@ class ScoringStep(AbstractStep):
 
         try:
             council = AgentCouncil(ctx.settings)
-            return council.evaluate(
+            score = council.evaluate(
                 user_prompt=user_prompt,
                 system_prompt=_SYSTEM_PROMPT,
                 scoring_output_type=_ScoringLLMOutput,
@@ -361,6 +369,15 @@ class ScoringStep(AbstractStep):
                 novelty_score=idea.novelty_score,
                 threshold=ctx.settings.score_go_threshold,
             )
+
+            # Dissent resolution (if enabled)
+            if ctx.settings.dissent_enabled:
+                from verdandi.agents.dissent import DissentAnalyzer
+
+                analyzer = DissentAnalyzer(ctx.settings)
+                score = analyzer.resolve(ctx, score)
+
+            return score
         except Exception as exc:
             logger.error(
                 "Council evaluation failed, falling back to single-model",
@@ -426,6 +443,42 @@ class ScoringStep(AbstractStep):
                 for provider in ("anthropic", "openai", "google")
             ]
 
+        # Mock dissent analysis when dissent is enabled
+        dissent_analysis: DissentAnalysis | None = None
+        if ctx.settings.dissent_enabled and ctx.settings.council_enabled:
+            dissent_analysis = DissentAnalysis(
+                dissent_detected=True,
+                dimension_dissents=[
+                    DimensionDissent(
+                        dimension="willingness_to_pay",
+                        scores_by_provider={"anthropic": 80, "openai": 55, "google": 90},
+                        spread=35,
+                        median_score=80,
+                        reasoning_excerpts=[
+                            "anthropic: Strong WTP signals from competitor pricing",
+                            "openai: Limited direct pricing evidence",
+                        ],
+                    ),
+                ],
+                resolution_rounds=[
+                    DissentResolutionRound(
+                        round_number=1,
+                        contested_dimensions=["willingness_to_pay"],
+                        followup_queries=[
+                            "competitor pricing analysis for target market",
+                            "willingness to pay survey data B2B SaaS",
+                        ],
+                        new_sources_count=4,
+                        score_before=total,
+                        score_after=total,
+                        decision_changed=False,
+                    ),
+                ],
+                decision_flipped=False,
+                initial_score=total,
+                final_score=total,
+            )
+
         return PreBuildScore(
             experiment_id=ctx.experiment.id or 0,
             worker_id=ctx.worker_id,
@@ -442,4 +495,5 @@ class ScoringStep(AbstractStep):
                 "Low-cost acquisition via developer communities",
             ],
             council_votes=council_votes,
+            dissent_analysis=dissent_analysis,
         )
