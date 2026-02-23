@@ -119,6 +119,28 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Dissent analysis settings
+    dissent_enabled: bool = False
+    dissent_max_rounds: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        description="Max follow-up research rounds when council members disagree.",
+    )
+    dissent_dimension_threshold: int = Field(
+        default=25,
+        ge=10,
+        le=50,
+        description="Score spread (max-min) across voters to flag a dimension as contested.",
+    )
+    dissent_decision_split_required: bool = Field(
+        default=False,
+        description=(
+            "If True, dissent resolution only triggers when voters disagree on "
+            "GO/NO_GO decision. If False, dimension spread alone is sufficient."
+        ),
+    )
+
     # Redis cache
     redis_url: str = ""  # Empty = cache disabled. e.g. "redis://localhost:6379/0"
     research_cache_ttl_hours: int = 24

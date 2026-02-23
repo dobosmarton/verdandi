@@ -61,6 +61,7 @@ class ExperimentDetailScreen(Screen[None]):
             yield Static(id="research-section", classes="section")
             yield Static(id="competitors-section", classes="section")
             yield Static(id="scoring-section", classes="section")
+            yield Static(id="dissent-section", classes="section")
             yield Static(id="steps-section", classes="section")
         yield Footer()
 
@@ -87,6 +88,7 @@ class ExperimentDetailScreen(Screen[None]):
         self._render_research(detail)
         self._render_competitors(detail)
         self._render_scoring(detail)
+        self._render_dissent(detail)
         self._render_steps(detail)
 
     def _render_header(self, detail: ExperimentDetail) -> None:
@@ -364,6 +366,60 @@ class ExperimentDetailScreen(Screen[None]):
         ]
 
         widget.update(Panel(Group(*renderables), title="Scoring", border_style="yellow"))
+
+    def _render_dissent(self, detail: ExperimentDetail) -> None:
+        widget = self.query_one("#dissent-section", Static)
+        score = detail.score
+        if (
+            score is None
+            or score.dissent_analysis is None
+            or not score.dissent_analysis.dissent_detected
+        ):
+            widget.update("")
+            return
+
+        da = score.dissent_analysis
+        lines: list[Text | str] = []
+
+        flip_text = " [DECISION FLIPPED]" if da.decision_flipped else ""
+        lines.append(
+            Text.assemble(
+                ("Score: ", "bold"),
+                (f"{da.initial_score} \u2192 {da.final_score}", ""),
+                (f"  ({len(da.resolution_rounds)} round(s))", "dim"),
+                (flip_text, "bold red" if da.decision_flipped else ""),
+            )
+        )
+
+        if da.dimension_dissents:
+            lines.append("")
+            lines.append(Text("Contested Dimensions", style="bold underline"))
+            for dd in da.dimension_dissents:
+                scores_str = ", ".join(f"{p}: {s}" for p, s in dd.scores_by_provider.items())
+                color = "red" if dd.spread >= 40 else "yellow"
+                lines.append(
+                    Text.assemble(
+                        (f"  {dd.dimension:<24s}", ""),
+                        (f"spread: {dd.spread}", color),
+                        (f"  ({scores_str})", "dim"),
+                    )
+                )
+
+        for rr in da.resolution_rounds:
+            lines.append("")
+            changed = " [changed]" if rr.decision_changed else ""
+            lines.append(
+                Text.assemble(
+                    (f"Round {rr.round_number}: ", "bold"),
+                    (f"{rr.score_before} \u2192 {rr.score_after}", ""),
+                    (f"  ({rr.new_sources_count} new sources)", "dim"),
+                    (changed, "bold yellow"),
+                )
+            )
+            if self._full:
+                lines.extend(Text(f"    Q: {q}", style="dim") for q in rr.followup_queries)
+
+        widget.update(Panel(_join_lines(lines), title="Dissent Analysis", border_style="magenta"))
 
     def _render_steps(self, detail: ExperimentDetail) -> None:
         widget = self.query_one("#steps-section", Static)
