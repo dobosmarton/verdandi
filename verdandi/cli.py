@@ -922,16 +922,16 @@ def strategy_show(ctx: click.Context, name: str) -> None:
     for i, query in enumerate(strategy_obj.discovery_queries, 1):
         click.echo(f"  {i}. {query}")
 
-    click.echo(f"\nPerplexity question:")
+    click.echo("\nPerplexity question:")
     click.echo(f"  {strategy_obj.discovery_perplexity_question[:100]}...")
 
-    click.echo(f"\nSource preferences:")
+    click.echo("\nSource preferences:")
     click.echo(f"  Reddit: {strategy_obj.prioritize_reddit}")
     click.echo(f"  HN: {strategy_obj.prioritize_hn}")
     click.echo(f"  Twitter: {strategy_obj.prioritize_twitter}")
 
     if strategy_obj.scoring_guidance:
-        click.echo(f"\nScoring guidance:")
+        click.echo("\nScoring guidance:")
         click.echo(f"  {strategy_obj.scoring_guidance[:100]}...")
 
 
@@ -960,7 +960,7 @@ def strategy_validate(file_path: str) -> None:
         click.echo(f"❌ YAML error: {e}", err=True)
         sys.exit(1)
     except ValidationError as e:
-        click.echo(f"❌ Validation failed:\n", err=True)
+        click.echo("❌ Validation failed:\n", err=True)
         for error in e.errors():
             field = " -> ".join(str(loc) for loc in error["loc"])
             click.echo(f"   {field}: {error['msg']}", err=True)

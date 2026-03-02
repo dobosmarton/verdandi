@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import yaml
 from pydantic import ValidationError
 
 from verdandi.models.idea import DiscoveryType
 from verdandi.strategies import DISRUPTION_STRATEGY, MOONSHOT_STRATEGY, DiscoveryStrategy
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def load_strategy_from_yaml(path: Path) -> DiscoveryStrategy:
@@ -43,13 +45,7 @@ def load_strategy_from_yaml(path: Path) -> DiscoveryStrategy:
     if "discovery_type" in data and isinstance(data["discovery_type"], str):
         data["discovery_type"] = DiscoveryType(data["discovery_type"].upper())
 
-    try:
-        return DiscoveryStrategy(**data)
-    except ValidationError as e:
-        raise ValidationError.from_exception_data(
-            title=f"Strategy validation failed for {path.name}",
-            line_errors=e.errors(),
-        ) from e
+    return DiscoveryStrategy(**data)
 
 
 def load_all_custom_strategies(strategies_dir: Path) -> list[DiscoveryStrategy]:
@@ -148,4 +144,5 @@ def strategy_to_yaml(strategy: DiscoveryStrategy) -> str:
     data = strategy.model_dump(mode="python")
     data["discovery_type"] = strategy.discovery_type.value.lower()
 
-    return yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    result: str = yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    return result
