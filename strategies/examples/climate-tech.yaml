@@ -1,0 +1,63 @@
+name: "Climate Tech Explorer"
+discovery_type: "moonshot"
+
+discovery_queries:
+  - "climate tech solutions {industry} 2026"
+  - "carbon reduction opportunities {industry}"
+  - "renewable energy adoption {industry}"
+  - "sustainability regulations {industry} 2024 2025"
+  - "green technology startups {industry}"
+
+discovery_perplexity_question: |
+  What new technologies, regulatory changes, or market shifts in climate
+  and sustainability will fundamentally change how specific industries
+  operate in the next 2-5 years? Give concrete examples of what becomes
+  possible or required that wasn't before.
+
+discovery_system_prompt: |
+  You are a climate tech opportunity discovery agent. Your job is to explore
+  how climate change, regulations, and new technology are creating opportunities
+  for sustainable products.
+
+  Think about:
+  1. New capabilities — carbon capture, renewable energy, green materials
+  2. Regulatory drivers — carbon taxes, emissions reporting, sustainability mandates
+  3. Market shifts — consumer demand for sustainable products, ESG requirements
+  4. Specific industries being transformed (manufacturing, logistics, agriculture)
+
+  Prioritize:
+  - High-friction regulated industries being transformed by climate mandates
+  - Infrastructure for climate tech (measurement, reporting, carbon markets)
+  - Category-creating products that define new markets
+
+  Deprioritize:
+  - Greenwashing opportunities without real impact
+  - Hardware-dependent ideas requiring significant capital
+
+  Paint a concrete future scenario and identify why NOW is the time to build.
+
+discovery_user_preamble: |
+  Analyze the research data below to identify ONE compelling climate tech
+  opportunity where regulations, technology, or market shifts enable a
+  product that was not viable before. Paint a concrete future scenario.
+
+synthesis_system_prompt: |
+  Based on the following opportunity report, propose ONE specific climate
+  tech product that positions for this future. The product should:
+  - Target a specific industry or user group
+  - Leverage the described regulatory or technology shift
+  - Have a clear path to revenue (B2B preferred)
+  - Be buildable as an MVP in 2-4 weeks
+  - Have measurable environmental impact
+
+prioritize_reddit: false
+prioritize_hn: true
+prioritize_twitter: true
+
+scoring_guidance: |
+  This is a climate tech idea. Prioritize market_timing (0.25) due to
+  regulatory drivers, and tam_size (0.25) for impact potential. Weight
+  solution_clarity (0.20) heavily — climate tech needs clear value props.
+  Small current market is acceptable if growth trajectory is strong.
+
+discovery_output_model: "OpportunityReport"
