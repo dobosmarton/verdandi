@@ -84,6 +84,7 @@ ignore = [
 "verdandi/cli.py" = ["ARG001"]  # Click context/options used indirectly
 "verdandi/tui/**/*.py" = ["ARG001"]  # Textual event handlers have unused params
 "verdandi/api/routes/*.py" = ["TC001"]  # Annotated deps must be runtime imports for FastAPI DI
+"verdandi/strategies.py" = ["TCH001"]  # DiscoveryType needed at runtime for Pydantic field type
 "alembic/**/*.py" = ["UP", "I", "N", "TCH", "ARG"]  # Generated migration code
 
 [tool.ruff.format]

@@ -1,6 +1,6 @@
-# Custom Discovery Strategies
+# Discovery Strategies
 
-This directory contains user-defined discovery strategies that extend Verdandi's built-in `disruption` and `moonshot` strategies.
+This directory contains all discovery strategies — both the built-in defaults (`disruption.yaml`, `moonshot.yaml`) and user-defined custom strategies.
 
 ## What is a Discovery Strategy?
 
@@ -12,9 +12,11 @@ A discovery strategy defines the complete "personality" of a discovery agent:
 
 ## Built-in Strategies
 
-Verdandi ships with two strategies:
-- **disruption** — Problem-first discovery (broken workflows, user complaints)
-- **moonshot** — Futures-first discovery (emerging tech, new capabilities)
+Verdandi ships with two default strategies defined as YAML files in this directory:
+- **disruption.yaml** — Problem-first discovery (broken workflows, user complaints)
+- **moonshot.yaml** — Futures-first discovery (emerging tech, new capabilities)
+
+You can edit these files directly to customize the defaults.
 
 ## Creating Custom Strategies
 
@@ -152,7 +154,7 @@ See the `examples/` subdirectory for templates:
 
 - File names should be lowercase with hyphens: `my-strategy.yaml`
 - Strategy names can be more readable: "My Strategy Name"
-- Avoid names that conflict with built-ins: "disruption", "moonshot"
+- Custom strategies with the same name as built-ins will override them
 
 ## Tips
 

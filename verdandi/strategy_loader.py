@@ -1,17 +1,22 @@
-"""Load and validate custom discovery strategies from YAML files."""
+"""Load and validate discovery strategies from YAML files."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import functools
+from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
 
 from verdandi.models.idea import DiscoveryType
-from verdandi.strategies import DISRUPTION_STRATEGY, MOONSHOT_STRATEGY, DiscoveryStrategy
+from verdandi.strategies import DiscoveryStrategy
 
-if TYPE_CHECKING:
-    from pathlib import Path
+_BUILTIN_NAMES: frozenset[str] = frozenset(("disruption", "moonshot"))
+
+
+def _builtin_strategies_dir() -> Path:
+    """Return path to the bundled strategies directory."""
+    return Path(__file__).resolve().parent.parent / "strategies"
 
 
 def load_strategy_from_yaml(path: Path) -> DiscoveryStrategy:
@@ -43,9 +48,23 @@ def load_strategy_from_yaml(path: Path) -> DiscoveryStrategy:
 
     # Convert discovery_type string to enum if needed
     if "discovery_type" in data and isinstance(data["discovery_type"], str):
-        data["discovery_type"] = DiscoveryType(data["discovery_type"].upper())
+        data["discovery_type"] = DiscoveryType(data["discovery_type"].lower())
 
     return DiscoveryStrategy(**data)
+
+
+@functools.lru_cache(maxsize=1)
+def load_builtin_strategies() -> dict[str, DiscoveryStrategy]:
+    """Load built-in strategies from bundled YAML files.
+
+    Results are cached for the lifetime of the process.
+    """
+    builtin_dir = _builtin_strategies_dir()
+    result: dict[str, DiscoveryStrategy] = {}
+    for name in sorted(_BUILTIN_NAMES):
+        path = builtin_dir / f"{name}.yaml"
+        result[name] = load_strategy_from_yaml(path)
+    return result
 
 
 def load_all_custom_strategies(strategies_dir: Path) -> list[DiscoveryStrategy]:
@@ -82,6 +101,8 @@ def get_strategy_by_name(
 ) -> DiscoveryStrategy | None:
     """Get a strategy by name (built-in or custom).
 
+    Resolution order: custom dir first (allows overrides), then builtins.
+
     Args:
         name: Strategy name ("disruption", "moonshot", or custom name)
         strategies_dir: Directory to search for custom strategies (optional)
@@ -89,29 +110,24 @@ def get_strategy_by_name(
     Returns:
         Strategy if found, None otherwise
     """
-    # Check built-in strategies first
-    if name.lower() == "disruption":
-        return DISRUPTION_STRATEGY
-    if name.lower() == "moonshot":
-        return MOONSHOT_STRATEGY
+    # Check custom strategies dir first (user overrides take precedence)
+    if strategies_dir is not None:
+        yaml_path = strategies_dir / f"{name}.yaml"
+        if yaml_path.exists():
+            try:
+                return load_strategy_from_yaml(yaml_path)
+            except (ValueError, ValidationError):
+                pass
 
-    # Search custom strategies
-    if strategies_dir is None:
-        return None
+        # Case-insensitive name match in custom dir
+        for strategy in load_all_custom_strategies(strategies_dir):
+            if strategy.name.lower() == name.lower():
+                return strategy
 
-    # Try exact filename match
-    yaml_path = strategies_dir / f"{name}.yaml"
-    if yaml_path.exists():
-        try:
-            return load_strategy_from_yaml(yaml_path)
-        except (ValueError, ValidationError):
-            return None
-
-    # Try case-insensitive name match
-    custom_strategies = load_all_custom_strategies(strategies_dir)
-    for strategy in custom_strategies:
-        if strategy.name.lower() == name.lower():
-            return strategy
+    # Fall back to built-in strategies
+    builtins = load_builtin_strategies()
+    if name.lower() in builtins:
+        return builtins[name.lower()]
 
     return None
 
@@ -125,10 +141,17 @@ def list_all_strategies(strategies_dir: Path | None = None) -> dict[str, list[Di
     Returns:
         Dict with "builtin" and "custom" keys
     """
-    builtin = [DISRUPTION_STRATEGY, MOONSHOT_STRATEGY]
-    custom = load_all_custom_strategies(strategies_dir) if strategies_dir else []
+    builtins = load_builtin_strategies()
+    builtin_list = list(builtins.values())
+    builtin_names = {s.name for s in builtin_list}
 
-    return {"builtin": builtin, "custom": custom}
+    custom: list[DiscoveryStrategy] = []
+    if strategies_dir:
+        all_from_dir = load_all_custom_strategies(strategies_dir)
+        # Exclude strategies that match builtin names to avoid double-listing
+        custom = [s for s in all_from_dir if s.name not in builtin_names]
+
+    return {"builtin": builtin_list, "custom": custom}
 
 
 def strategy_to_yaml(strategy: DiscoveryStrategy) -> str:

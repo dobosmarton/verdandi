@@ -9,14 +9,18 @@ import yaml
 from pydantic import ValidationError
 
 from verdandi.models.idea import DiscoveryType
-from verdandi.strategies import DISRUPTION_STRATEGY, MOONSHOT_STRATEGY
 from verdandi.strategy_loader import (
     get_strategy_by_name,
     list_all_strategies,
     load_all_custom_strategies,
+    load_builtin_strategies,
     load_strategy_from_yaml,
     strategy_to_yaml,
 )
+
+_builtins = load_builtin_strategies()
+DISRUPTION_STRATEGY = _builtins["disruption"]
+MOONSHOT_STRATEGY = _builtins["moonshot"]
 
 
 def test_load_valid_strategy_from_yaml(tmp_path: Path) -> None:

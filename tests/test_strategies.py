@@ -15,11 +15,12 @@ from verdandi.models.idea import (
     ProblemReport,
     TrendSignal,
 )
-from verdandi.strategies import (
-    ALL_STRATEGIES,
-    DISRUPTION_STRATEGY,
-    MOONSHOT_STRATEGY,
-)
+from verdandi.strategy_loader import load_builtin_strategies
+
+_builtins = load_builtin_strategies()
+DISRUPTION_STRATEGY = _builtins["disruption"]
+MOONSHOT_STRATEGY = _builtins["moonshot"]
+ALL_STRATEGIES = list(_builtins.values())
 
 if TYPE_CHECKING:
     from verdandi.config import Settings

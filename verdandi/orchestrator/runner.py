@@ -424,7 +424,11 @@ class PipelineRunner:
         strategies to converge toward the target ratio.
         """
         from verdandi.models.idea import DiscoveryType
-        from verdandi.strategies import DISRUPTION_STRATEGY, MOONSHOT_STRATEGY
+        from verdandi.strategy_loader import load_builtin_strategies
+
+        builtins = load_builtin_strategies()
+        disruption = builtins["disruption"]
+        moonshot = builtins["moonshot"]
 
         target_ratio = self.settings.discovery_disruption_ratio
 
@@ -439,10 +443,10 @@ class PipelineRunner:
             current_ratio = 0.0 if total == 0 else disruption_count / total
 
             if current_ratio >= target_ratio:
-                schedule.append(MOONSHOT_STRATEGY)
+                schedule.append(moonshot)
                 moonshot_count += 1
             else:
-                schedule.append(DISRUPTION_STRATEGY)
+                schedule.append(disruption)
                 disruption_count += 1
 
         logger.info(
