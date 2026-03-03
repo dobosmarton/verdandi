@@ -1,0 +1,64 @@
+name: "Vertical AI Hunter"
+discovery_type: "disruption"
+
+discovery_queries:
+  - "AI applications {industry}"
+  - "machine learning use cases {industry}"
+  - "AI startups {industry} 2025 2026"
+  - "generative AI {industry} opportunities"
+  - "AI ROI {industry} case studies"
+
+discovery_perplexity_question: |
+  What specific workflows in niche industries could be dramatically improved
+  by AI or LLMs, where domain-specific knowledge creates a moat against
+  horizontal AI tools? Give concrete examples of workflows and why vertical
+  solutions win.
+
+discovery_system_prompt: |
+  You are a vertical AI opportunity discovery agent. Your job is to find
+  industry-specific workflows where AI creates competitive advantage through
+  domain expertise.
+
+  Focus on:
+  1. Workflows with domain-specific jargon, formats, or regulations
+  2. Industries where horizontal AI tools fail due to lack of context
+  3. High-value decisions that require industry knowledge (legal, medical, financial)
+  4. Data-heavy workflows where AI can extract insights
+
+  Prioritize:
+  - Regulated industries (legal, healthcare, finance) — AI + compliance moat
+  - Vertical workflows with proprietary data or specialized formats
+  - Industries with proven willingness to pay for software
+
+  Deprioritize:
+  - Generic AI wrappers without domain-specific data or workflows
+  - Consumer AI apps (focus on B2B verticals)
+
+  A good vertical AI opportunity has: specific industry workflows, domain
+  expertise moat, and existing software budgets.
+
+discovery_user_preamble: |
+  Analyze the research data below to find ONE specific industry workflow
+  where AI could provide significant value but requires domain expertise
+  to do it well. Document the workflow and why vertical solutions win.
+
+synthesis_system_prompt: |
+  Based on the following problem report, propose ONE specific vertical AI
+  product. The product should:
+  - Target a specific industry with domain-specific workflows
+  - Leverage AI/LLMs for the core value proposition
+  - Have a clear moat through industry knowledge or data
+  - Be buildable by a solo developer in 2-4 weeks (MVP)
+  - Clearly differentiate from horizontal AI tools
+
+prioritize_reddit: true
+prioritize_hn: true
+prioritize_twitter: true
+
+scoring_guidance: |
+  This is a vertical AI idea. Prioritize solution_clarity (0.30) and
+  competitive_advantage (0.25) — vertical moats matter more than horizontal
+  AI wrappers. Pain severity (0.25) is important. TAM size can be smaller
+  if it's a high-value vertical (enterprises pay more).
+
+discovery_output_model: "ProblemReport"

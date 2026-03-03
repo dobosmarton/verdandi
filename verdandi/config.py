@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # Data directory
     data_dir: Path = Path("./data")
 
+    # Custom strategies directory
+    strategies_dir: Path = Path("./strategies")
+
     # Monitoring thresholds
     monitor_email_signup_go: float = 10.0
     monitor_email_signup_nogo: float = 3.0

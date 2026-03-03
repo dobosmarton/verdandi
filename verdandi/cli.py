@@ -79,9 +79,9 @@ def cli(ctx: click.Context, verbose: bool, remote: str | None) -> None:
 @click.option("--max-ideas", default=3, type=int, help="Number of ideas to discover")
 @click.option(
     "--strategy",
-    type=click.Choice(["auto", "disruption", "moonshot"], case_sensitive=False),
+    type=str,
     default="auto",
-    help="Discovery strategy: auto (portfolio-balanced), disruption, or moonshot",
+    help="Discovery strategy: auto, disruption, moonshot, or custom strategy name",
 )
 @click.option("--dry-run", is_flag=True, help="Use mock data")
 @click.pass_context
@@ -105,12 +105,18 @@ def discover(ctx: click.Context, max_ideas: int, strategy: str, dry_run: bool) -
         return
 
     from verdandi.orchestrator import PipelineRunner
+    from verdandi.strategy_loader import get_strategy_by_name
 
     strategy_override = None
     if strategy != "auto":
-        from verdandi.strategies import DISRUPTION_STRATEGY, MOONSHOT_STRATEGY
-
-        strategy_override = DISRUPTION_STRATEGY if strategy == "disruption" else MOONSHOT_STRATEGY
+        settings = ctx.obj["settings"]
+        strategy_obj = get_strategy_by_name(strategy, settings.strategies_dir)
+        if strategy_obj is None:
+            click.echo(f"Error: Strategy '{strategy}' not found", err=True)
+            click.echo("\nAvailable strategies: auto, disruption, moonshot", err=True)
+            click.echo("Use 'verdandi strategy list' to see custom strategies", err=True)
+            sys.exit(1)
+        strategy_override = strategy_obj
 
     settings = ctx.obj["settings"]
     db = _get_db(settings)
@@ -860,6 +866,105 @@ def reservations(ctx: click.Context, active_only: bool) -> None:
             )
     finally:
         db.close()
+
+
+@cli.group()
+def strategy() -> None:
+    """Manage discovery strategies."""
+    pass
+
+
+@strategy.command("list")
+@click.pass_context
+def strategy_list(ctx: click.Context) -> None:
+    """Show all available strategies (built-in + custom)."""
+    from verdandi.strategy_loader import list_all_strategies
+
+    settings = ctx.obj["settings"]
+    strategies = list_all_strategies(settings.strategies_dir)
+
+    click.echo("\n📚 Available Strategies\n")
+
+    click.echo("Built-in:")
+    for s in strategies["builtin"]:
+        click.echo(f"  • {s.discovery_type.value.lower():<12} — {s.name}")
+
+    if strategies["custom"]:
+        click.echo("\nCustom:")
+        for s in strategies["custom"]:
+            click.echo(f"  • {s.name:<12} — {s.discovery_output_model}")
+    else:
+        click.echo("\nCustom:")
+        click.echo("  (none — create one with 'verdandi strategy create')")
+
+    click.echo("\nUse: verdandi discover --strategy <NAME>")
+
+
+@strategy.command("show")
+@click.argument("name")
+@click.pass_context
+def strategy_show(ctx: click.Context, name: str) -> None:
+    """Display strategy details."""
+    from verdandi.strategy_loader import get_strategy_by_name
+
+    settings = ctx.obj["settings"]
+    strategy_obj = get_strategy_by_name(name, settings.strategies_dir)
+
+    if strategy_obj is None:
+        click.echo(f"Error: Strategy '{name}' not found", err=True)
+        sys.exit(1)
+
+    click.echo(f"\n📋 Strategy: {strategy_obj.name}\n")
+    click.echo(f"Discovery type: {strategy_obj.discovery_type.value}")
+    click.echo(f"Output model: {strategy_obj.discovery_output_model}")
+
+    click.echo(f"\nDiscovery queries ({len(strategy_obj.discovery_queries)}):")
+    for i, query in enumerate(strategy_obj.discovery_queries, 1):
+        click.echo(f"  {i}. {query}")
+
+    click.echo("\nPerplexity question:")
+    click.echo(f"  {strategy_obj.discovery_perplexity_question[:100]}...")
+
+    click.echo("\nSource preferences:")
+    click.echo(f"  Reddit: {strategy_obj.prioritize_reddit}")
+    click.echo(f"  HN: {strategy_obj.prioritize_hn}")
+    click.echo(f"  Twitter: {strategy_obj.prioritize_twitter}")
+
+    if strategy_obj.scoring_guidance:
+        click.echo("\nScoring guidance:")
+        click.echo(f"  {strategy_obj.scoring_guidance[:100]}...")
+
+
+@strategy.command("validate")
+@click.argument("file_path", type=click.Path(exists=True))
+def strategy_validate(file_path: str) -> None:
+    """Validate a strategy YAML file."""
+    from pathlib import Path
+
+    from pydantic import ValidationError
+
+    from verdandi.strategy_loader import load_strategy_from_yaml
+
+    path = Path(file_path)
+
+    try:
+        strategy_obj = load_strategy_from_yaml(path)
+        click.echo(f"✅ Strategy '{strategy_obj.name}' is valid")
+        click.echo(f"   Type: {strategy_obj.discovery_type.value}")
+        click.echo(f"   Queries: {len(strategy_obj.discovery_queries)}")
+        click.echo(f"   Output: {strategy_obj.discovery_output_model}")
+    except FileNotFoundError:
+        click.echo(f"❌ File not found: {file_path}", err=True)
+        sys.exit(1)
+    except ValueError as e:
+        click.echo(f"❌ YAML error: {e}", err=True)
+        sys.exit(1)
+    except ValidationError as e:
+        click.echo("❌ Validation failed:\n", err=True)
+        for error in e.errors():
+            field = " -> ".join(str(loc) for loc in error["loc"])
+            click.echo(f"   {field}: {error['msg']}", err=True)
+        sys.exit(1)
 
 
 @cli.command()

@@ -186,6 +186,7 @@ All configuration is via environment variables (loaded from `.env`):
 | `LLM_MAX_TOKENS` | *(unset — 16384 fallback)* | Max output tokens per LLM call. Leave unset for generous default |
 | `LLM_TEMPERATURE` | `0.7` | LLM temperature |
 | `DATA_DIR` | `./data` | Directory for SQLite databases |
+| `STRATEGIES_DIR` | `./strategies` | Directory for custom discovery strategies |
 | `VERDANDI_API_URL` | *(empty)* | Remote API URL — if set, CLI talks to HTTP instead of local SQLite |
 
 ### Agent Council (Optional)
@@ -225,7 +226,7 @@ All configuration is via environment variables (loaded from `.env`):
 
 ```
 verdandi                                         # Show help
-verdandi discover [--max-ideas N] [--strategy auto|disruption|moonshot] [--dry-run]
+verdandi discover [--max-ideas N] [--strategy NAME] [--dry-run]
 verdandi run <ID> [--dry-run] [--stop-after N]   # Run pipeline for one experiment
 verdandi run --all [--dry-run]                   # Run all pending experiments
 verdandi research [--max-ideas N] [--dry-run]    # Discover + research + score (stops at Step 2)
@@ -243,6 +244,9 @@ verdandi reservations [--active-only/--all]      # Show topic reservations
 verdandi cache ping                              # Check Redis connectivity
 verdandi cache stats                             # Show research cache statistics
 verdandi cache purge                             # Delete all research cache entries
+verdandi strategy list                           # Show all available strategies (built-in + custom)
+verdandi strategy show <NAME>                    # Display strategy details
+verdandi strategy validate <FILE>                # Validate a strategy YAML file
 verdandi tui                                     # Interactive experiment browser (requires [tui] extra)
 verdandi serve [--host H] [--port P]             # Start the FastAPI API server
 verdandi worker [--workers N]                    # Start Huey task queue consumer
@@ -283,6 +287,85 @@ verdandi tui
 Sections shown: header, idea, market research, competitors table, scoring breakdown, completed steps. Sections for steps not yet run display a placeholder.
 
 Works with `--remote` for browsing experiments on a remote API server.
+
+## Custom Discovery Strategies
+
+Verdandi ships with two built-in discovery strategies:
+
+- **disruption** — Problem-first discovery (focuses on broken workflows, user complaints)
+- **moonshot** — Futures-first discovery (focuses on emerging tech, new capabilities)
+
+You can create custom strategies tailored to specific industries, market segments, or investment theses. Strategies are defined in YAML files and control:
+
+- **Research queries** — What to search for (with placeholder variables)
+- **LLM prompts** — How to analyze and synthesize ideas
+- **Source preferences** — Which platforms to prioritize (Reddit, HN, Twitter)
+- **Scoring guidance** — How to weight different factors
+
+### Creating a Custom Strategy
+
+Create a YAML file in the `strategies/` directory:
+
+```yaml
+# strategies/b2b-saas.yaml
+name: "B2B SaaS Hunter"
+discovery_type: "disruption"  # or "moonshot"
+
+# Research queries (can use {industry}, {keyword}, {year} placeholders)
+discovery_queries:
+  - "B2B SaaS pain points in {industry}"
+  - "{industry} software market trends 2024"
+  - "Enterprise software adoption {industry}"
+
+# Perplexity synthesis question
+discovery_perplexity_question: |
+  What specific workflows do B2B companies in niche industries
+  constantly complain about being manual or broken?
+
+# Phase 1: Discovery prompts
+discovery_system_prompt: |
+  You are a B2B SaaS problem discovery agent...
+
+discovery_user_preamble: |
+  Analyze the research data below to find ONE specific problem...
+
+# Phase 2: Synthesis prompt
+synthesis_system_prompt: |
+  Based on the problem report, propose ONE specific B2B SaaS product...
+
+# Source preferences
+prioritize_reddit: true
+prioritize_hn: true
+prioritize_twitter: false
+
+# Scoring guidance
+scoring_guidance: |
+  Prioritize pain_severity (0.35) and tam_size (0.30).
+  Daily pain scores higher than monthly pain.
+
+# Output model type
+discovery_output_model: "ProblemReport"  # or "OpportunityReport"
+```
+
+See `strategies/README.md` and `strategies/examples/` for full documentation and templates.
+
+### Using Custom Strategies
+
+```bash
+# List all strategies
+verdandi strategy list
+
+# View strategy details
+verdandi strategy show b2b-saas
+
+# Validate a strategy file
+verdandi strategy validate strategies/my-strategy.yaml
+
+# Use in discovery
+verdandi discover --strategy b2b-saas --max-ideas 5
+```
+
+Custom strategies transform Verdandi into a domain-specific idea finder — whether you're exploring climate tech, vertical AI, fintech, or any other market segment.
 
 ## REST API
 

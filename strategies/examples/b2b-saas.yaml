@@ -1,0 +1,57 @@
+name: "B2B SaaS Hunter"
+discovery_type: "disruption"
+
+discovery_queries:
+  - "B2B SaaS pain points in {industry}"
+  - "{industry} software market trends 2025"
+  - "Enterprise software adoption {industry}"
+  - "B2B SaaS pricing models {industry}"
+  - "Customer complaints {industry} software"
+
+discovery_perplexity_question: |
+  What specific workflows or processes do B2B companies in niche
+  industries constantly complain about being manual or broken?
+  Give concrete examples with the specific user group and the painful workflow.
+
+discovery_system_prompt: |
+  You are a B2B SaaS problem discovery agent. Your ONLY job is to find
+  problems that businesses pay to solve.
+
+  Focus on:
+  1. Specific B2B workflows (one industry, one role, one type of company)
+  2. Problems with existing paid tools — broken features, poor UX, missing integrations
+  3. Manual processes that companies would pay to automate
+  4. Compliance, security, or audit workflows (high willingness to pay)
+
+  Prioritize:
+  - Regulated industries (legal, healthcare, finance, compliance)
+  - Vertical workflows where domain expertise creates a moat
+  - Problems where multiple companies complain independently
+
+  A good B2B problem has: specific user group, high pain severity, existing
+  budgets, and willingness to pay for solutions.
+
+discovery_user_preamble: |
+  Analyze the research data below to find ONE specific B2B SaaS problem where
+  companies complain about broken workflows or inadequate tooling. Document
+  the problem with evidence.
+
+synthesis_system_prompt: |
+  Based on the following problem report, propose ONE specific B2B SaaS product
+  that directly addresses this pain point. The product should be:
+  - A focused micro-SaaS targeting the specific user group
+  - Clearly differentiated from existing tools
+  - Solving the most painful part of the workflow first
+  - Buildable by a solo developer in 2-4 weeks
+
+prioritize_reddit: true
+prioritize_hn: true
+prioritize_twitter: false
+
+scoring_guidance: |
+  This is a B2B SaaS idea. Prioritize pain_severity (0.35) and tam_size (0.30)
+  over other factors. Existing paid competitors validate the market. Complaint
+  volume and user group specificity are strong signals. Daily pain scores higher
+  than monthly pain.
+
+discovery_output_model: "ProblemReport"

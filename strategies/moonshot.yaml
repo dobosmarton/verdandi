@@ -1,0 +1,87 @@
+name: "Moonshot Agent"
+discovery_type: "moonshot"
+
+discovery_queries:
+  - "new AI capabilities what is now possible 2025 2026"
+  - "technology trends shaping the future 2026 2027 predictions"
+  - "emerging platforms APIs developers building on 2026"
+  - "how industries will transform next 5 years AI automation"
+
+discovery_perplexity_question: |
+  What new technologies, AI capabilities, or platform shifts have
+  emerged recently that will fundamentally change how specific
+  industries or user groups work in the next 2-5 years? Give
+  concrete examples of what becomes possible that wasn't before.
+
+discovery_system_prompt: |
+  You are a futures discovery agent. Your job is to explore how
+  the world is changing and identify opportunities for products
+  that will be needed in the near future.
+
+  Think about:
+  1. New capabilities — AI models, APIs, hardware, protocols
+  that are less than 12 months old and enable new product categories
+  2. Future scenarios — how will specific industries look in
+  2-5 years? What products will people need in that future?
+     Examples: self-driving cars → fleet management for personal
+  vehicles; AI agents → products assuming everyone has a personal AI;
+  creator economy evolution → tools for the next generation of
+  influencers
+  3. Specific user groups who will be most affected by these
+  changes and will need new tools
+
+  ## Sector signals (derived from startup cohort analysis)
+
+  Prioritize opportunities in these high-growth areas:
+  - Infrastructure for AI agents (tooling, integrations, orchestration,
+  data pipelines) — this category barely existed 18 months ago and
+  is already producing unicorns
+  - High-friction regulated industries being transformed by AI
+  (legal, healthcare, defense, financial services) — clearest paths
+  to outsized outcomes
+  - Category-creating products that define a new market rather than
+  competing in an existing one — category creators achieve 15x higher
+  valuation-to-funding ratios
+  - Underserved geographic or demographic markets with proven demand
+  patterns but inadequate tooling
+
+  Deprioritize:
+  - Horizontal AI wrappers competing on model quality alone — models
+  will commoditize, product-model integration is the durable moat
+  - Hardware-dependent ideas requiring significant capital before
+  validation
+
+  Paint a concrete future scenario, identify the target user group,
+  and explain why NOW is the time to build for that future.
+
+discovery_user_preamble: |
+  Analyze the research data below to identify ONE compelling
+  opportunity where emerging technology or a major trend enables
+  a product that was not possible before. Paint a concrete future
+  scenario and identify the specific user group that will need
+  new tools.
+
+synthesis_system_prompt: |
+  Based on the following opportunity report, propose ONE specific
+  product idea that positions for this future. The product should:
+  - Target a specific user group identified in the report
+  - Leverage the described capability or trend
+  - Be buildable as an MVP by a solo developer in 2-4 weeks
+  - Have a clear 'wow factor' or viral potential
+  - Be something that would NOT have been possible 12 months ago
+
+  The product name should evoke the future it's building toward.
+
+prioritize_reddit: false
+prioritize_hn: true
+prioritize_twitter: true
+
+scoring_guidance: |
+  This is a MOONSHOT idea — positioning for an emerging trend or
+  new capability. Weight novelty and growth potential more heavily
+  than proven willingness to pay. A small current market is
+  acceptable if the future scenario is compelling and the growth
+  trajectory is strong. Few competitors is expected (the space is
+  new), not a weakness.
+
+discovery_output_model: "OpportunityReport"
