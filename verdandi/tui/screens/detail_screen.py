@@ -6,6 +6,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, ClassVar
 
 from rich import box
+from rich.console import Console as RichConsole
 from rich.panel import Panel
 from rich.table import Table as RichTable
 from rich.text import Text
@@ -22,6 +23,27 @@ if TYPE_CHECKING:
 
     from verdandi.tui.app import VerdandiApp
 
+# Shared console for rendering Rich objects to plain text (no ANSI codes).
+_PLAIN_CONSOLE = RichConsole(width=120, no_color=True, highlight=False)
+
+
+def _rich_to_text(renderable: object) -> str:
+    """Render any Rich renderable to plain text without ANSI codes or borders."""
+    # Unwrap Panel to get inner content (avoids box-drawing border characters).
+    if isinstance(renderable, Panel):
+        title = renderable.title
+        inner = renderable.renderable
+        parts: list[str] = []
+        if title:
+            parts.append(f"── {title} ──")
+        with _PLAIN_CONSOLE.capture() as capture:
+            _PLAIN_CONSOLE.print(inner)
+        parts.append(capture.get().rstrip())
+        return "\n".join(parts)
+    with _PLAIN_CONSOLE.capture() as capture:
+        _PLAIN_CONSOLE.print(renderable)
+    return capture.get().rstrip()
+
 
 def _trunc(items: list[str], limit: int, full: bool) -> list[str]:
     return items if full else items[:limit]
@@ -36,6 +58,18 @@ def _join_lines(lines: list[Text | str]) -> Text:
     return Text("\n").join(Text(str(line)) if isinstance(line, str) else line for line in lines)
 
 
+# Section widget IDs in display order (excluding loading).
+_SECTION_IDS = (
+    "header-section",
+    "idea-section",
+    "research-section",
+    "competitors-section",
+    "scoring-section",
+    "dissent-section",
+    "steps-section",
+)
+
+
 class ExperimentDetailScreen(Screen[None]):
     """Scrollable research report for a single experiment."""
 
@@ -43,6 +77,8 @@ class ExperimentDetailScreen(Screen[None]):
         Binding("escape", "go_back", "Back"),
         Binding("q", "app.quit", "Quit"),
         Binding("f", "toggle_full", "Toggle Full"),
+        Binding("c", "copy_section", "Copy Section"),
+        Binding("C", "copy_all", "Copy All"),
     ]
     CSS_PATH = None  # Styles inherited from app
 
@@ -90,6 +126,8 @@ class ExperimentDetailScreen(Screen[None]):
         self._render_scoring(detail)
         self._render_dissent(detail)
         self._render_steps(detail)
+
+    # ── Section renderers ────────────────────────────────────────────
 
     def _render_header(self, detail: ExperimentDetail) -> None:
         exp = detail.experiment
@@ -436,6 +474,68 @@ class ExperimentDetailScreen(Screen[None]):
 
         content = "\n".join(lines)
         widget.update(Panel(content, title="Completed Steps", border_style="dim"))
+
+    # ── Copy actions ─────────────────────────────────────────────────
+
+    def _widget_to_text(self, widget: Static) -> str:
+        """Render a Static widget's content to clean plain text."""
+        from textual.visual import RichVisual
+
+        visual = widget._render()
+        if isinstance(visual, RichVisual):
+            return _rich_to_text(visual._renderable)
+        return str(visual).strip()
+
+    def action_copy_section(self) -> None:
+        """Copy the topmost visible section to clipboard."""
+        scroll = self.query_one("#detail-scroll", VerticalScroll)
+        scroll_y = scroll.scroll_offset.y
+
+        # Find the first section whose top edge is at or above the current scroll position.
+        best_widget: Static | None = None
+        for sid in _SECTION_IDS:
+            widget = self.query_one(f"#{sid}", Static)
+            # Skip empty sections (hidden with empty string)
+            content = self._widget_to_text(widget)
+            if not content.strip():
+                continue
+            if widget.region.y <= scroll_y + scroll.region.y + 2:
+                best_widget = widget
+            else:
+                # Past the viewport top — use this one if we haven't found any yet
+                if best_widget is None:
+                    best_widget = widget
+                break
+
+        if best_widget is None:
+            self.notify("Nothing to copy", severity="warning")
+            return
+
+        text = self._widget_to_text(best_widget)
+        if not text.strip():
+            self.notify("Section is empty", severity="warning")
+            return
+
+        self.app.copy_to_clipboard(text)
+        self.notify("Section copied!")
+
+    def action_copy_all(self) -> None:
+        """Copy all experiment sections to clipboard."""
+        parts: list[str] = []
+        for sid in _SECTION_IDS:
+            widget = self.query_one(f"#{sid}", Static)
+            text = self._widget_to_text(widget)
+            if text.strip():
+                parts.append(text)
+
+        if not parts:
+            self.notify("Nothing to copy", severity="warning")
+            return
+
+        self.app.copy_to_clipboard("\n\n".join(parts))
+        self.notify("All sections copied!")
+
+    # ── Navigation ───────────────────────────────────────────────────
 
     def action_go_back(self) -> None:
         self.app.pop_screen()  # type: ignore[unused-awaitable]

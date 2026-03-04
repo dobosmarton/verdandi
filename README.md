@@ -281,6 +281,8 @@ verdandi tui
 |-----|--------|
 | `↑` / `↓` | Scroll |
 | `f` | Toggle full / truncated display |
+| `c` | Copy current section as plain text |
+| `C` | Copy all experiment data as plain text |
 | `Escape` | Back to list |
 | `q` | Quit |
 
@@ -712,6 +714,136 @@ The orchestrator will automatically pick it up via the `@register_step` decorato
 | **Total** | **$28-83/month** |
 
 At roughly **$0.75-$2.00 per product validation** (excluding domains), Verdandi can test 30-100+ ideas monthly.
+
+## Strategy & Research
+
+This section documents the original research behind Verdandi's tool choices, pricing analysis, and design rationale. It serves as the "why" behind every architectural decision.
+
+### The orchestration layer: keep it simple
+
+The single most important architectural decision is **not** to use a framework. For a sequential 11-step pipeline running periodically, custom Python scripts with the Claude API and PydanticAI for structured outputs outperform every agent framework evaluated — LangGraph, CrewAI, AutoGen, and the OpenAI Agents SDK all add abstraction overhead without proportional benefit.
+
+**Why custom scripts win here:** The pipeline is fundamentally linear (research → build → deploy → monitor), and frameworks introduce debugging complexity that's dangerous for unattended autonomous operation. CrewAI's logging is broken inside Tasks. LangGraph's graph abstractions require significant upfront investment. AutoGen merged into Microsoft's Agent Framework (now in preview, GA target Q1 2026) and carries Azure ecosystem baggage. The OpenAI Agents SDK optimizes for OpenAI models, not Claude.
+
+If observability needs grow, **Prefect** (free self-hosted, Python-native) or **Windmill** (open-source, 128MB orchestrator) are the best graduation paths.
+
+### Deep research: the $10–45/month intelligence stack
+
+The research layer is the most critical component — the agent should refuse to build unless evidence strongly supports the opportunity. No single tool covers all research needs, but a combination of free/cheap APIs provides remarkable depth.
+
+**Tavily** is the primary search API. Purpose-built for AI agents, it returns clean, LLM-optimized structured output. The free tier provides **1,000 searches/month** — enough for ~50 deep research sessions. Its `/research` endpoint performs multi-step agent-mode research for complex queries.
+
+**Serper.dev** provides structured Google SERP data at the best price — **2,500 free queries** (one-time, no credit card), then $1 per 1,000 queries. The critical capability is `site:reddit.com` queries that extract Reddit discussions without touching the Reddit API's commercial restrictions. The "People Also Ask" data directly reveals common pain points.
+
+**Exa.ai** fills a unique niche with **neural/semantic search** — finding results by meaning rather than keywords. Invaluable for competitor discovery and finding niche communities discussing specific problems. The $10 one-time free credit covers roughly 2,000 searches.
+
+**Perplexity Sonar** synthesizes multi-source research answers with citations in a single API call. At roughly **$0.006 per basic query**, it's the cheapest way to get AI-synthesized market intelligence.
+
+Supporting tools: **Firecrawl** (500 free page scrapes/month, open-source self-hostable) for competitor website analysis, **HackerNews Algolia API** (free, unlimited) for developer pain points, and **Jina AI Reader** (free — prefix any URL with `r.jina.ai/`) for clean markdown extraction.
+
+Expensive tools like SimilarWeb ($199+/month) and Crunchbase Pro ($49+/month) are unnecessary.
+
+| Tool | Monthly Cost | Usage | Role |
+|------|-------------|-------|------|
+| Tavily (free tier) | $0 | 1,000 searches | Primary agent search |
+| Serper.dev (free) | $0 | 2,500 queries (one-time) | SERP data, Reddit via site: queries |
+| Exa.ai | $0–10 | ~2,000 searches | Semantic competitor discovery |
+| Perplexity Sonar | $5–15 | 1,000–2,500 queries | Synthesized research answers |
+| Firecrawl (free) | $0 | 500 pages | Deep competitor scraping |
+| HN Algolia API | $0 | Unlimited | Developer pain points |
+
+### Landing pages: template-fill beats AI builders
+
+Most AI landing page builders cannot be automated. **Lovable, Bolt.new, Framer, Mixo, Carrd, Typedream, and Durable all lack public APIs** for programmatic page creation. Only v0.dev ($20/month) and Unicorn Platform ($18–29/month) offer API access, but both add cost and complexity.
+
+**The winning strategy is template-fill + Cloudflare deployment.** Pre-built HTML+Tailwind CSS templates with `{{TOKEN}}` placeholders, LLM-generated copy via PydanticAI, and string interpolation. This approach is **100% reliable** — LLMs generating full HTML from scratch produce broken code roughly 15% of the time, while template-fill has a near-zero failure rate.
+
+### Domains and deployment: Porkbun + Cloudflare Pages
+
+**Porkbun is the clear winner for automated domain purchase.** It offers a modern JSON REST API supporting full programmatic domain registration, DNS management, and SSL retrieval. Pricing: **$7.97 first year for .com** ($11.08 renewal), with free WHOIS privacy, email forwarding, and Let's Encrypt SSL.
+
+**Critical finding:** Cloudflare Registrar **does not offer a public API for domain registration** — only for managing existing domains. The workaround is registering via Porkbun's API, then pointing nameservers to Cloudflare.
+
+**Cloudflare Pages** wins for deployment with **unlimited bandwidth and unlimited sites on the free tier**. The Direct Upload API requires no Git setup, SSL is automatic, and 300+ global edge locations ensure fast loading.
+
+Automated pipeline flow:
+1. Porkbun API → check availability → purchase .com domain (~$8–10)
+2. Porkbun API → set nameservers to Cloudflare
+3. Cloudflare API → add zone → configure DNS CNAME to Pages project
+4. Cloudflare Pages → deploy HTML via Direct Upload API
+5. Automatic SSL → **landing page live in ~2–5 minutes**
+
+### Analytics and email: zero-cost validation infrastructure
+
+**Umami** (self-hosted) is the optimal analytics choice — free, unlimited sites, full REST API, custom event tracking, GDPR-compliant with no cookies. Runs on a $5/month VPS via Docker Compose with PostgreSQL.
+
+**EmailOctopus** provides the most generous free tier: **2,500 subscribers and 10,000 emails/month** with full REST API access.
+
+### Distribution and go/no-go automation
+
+Distribution combines **LinkedIn API** (free), **Twitter/X free tier** (500 posts/month), **Reddit** (free API, 10% self-promotion rule), and **Bluesky** via the AT Protocol (free).
+
+**Automated go/no-go decisions** after 200–500 visitors:
+- **GO**: Email signup rate >10%, CTA click rate >15%, bounce rate <60%
+- **ITERATE**: Email signup 3–10%, bounce 60–75%
+- **NO-GO**: Email signup <3% after 500+ visitors, bounce >80%
+
+### Key research conclusions
+
+Three non-obvious findings emerged:
+
+1. **Cloudflare Registrar** — despite having the best pricing and DNS — cannot automate domain purchases, making Porkbun the correct choice
+2. **Nearly every AI landing page builder lacks an API**, making template-fill not just cheapest but most automatable
+3. **No existing project implements this full pipeline** — the autonomous loop from deep research through monitoring and go/no-go decisions is genuinely novel
+
+The key technical insight: **reliability beats sophistication** for autonomous operation. Template-fill beats AI page generators (zero failure rate vs. ~85%). Custom Python scripts beat agent frameworks (full debuggability, no abstraction leaks). Cron beats workflow engines (the pipeline runs weekly, not continuously).
+
+---
+
+## Implementation Plan (Historical)
+
+> **Note (Feb 2026):** The plan below was the original skeleton design. The project has since migrated from Instructor to PydanticAI, from raw sqlite3 to SQLAlchemy 2.0+ ORM, and added a FastAPI REST API layer and structlog structured logging. Retained for historical context.
+
+### Implementation roadmap
+
+**Week 1** — Pipeline skeleton: Pydantic state models, orchestrator with JSON checkpointing, development environment setup.
+
+**Week 2** — Steps 1–3 (Research → MVP → Landing Page): wire up Tavily, Serper, Exa for research, build Claude+PydanticAI pipeline for MVP definition and copy generation, create HTML+Tailwind template variants.
+
+**Week 3** — Steps 4–6 (Domain → Deploy → Analytics): integrate Porkbun API, set up Cloudflare Pages deployment, deploy Umami on VPS, automate analytics script injection.
+
+**Week 4** — Steps 7–8 (Distribute → Monitor): social media posting APIs, analytics polling, conversion calculation, go/no-go threshold automation, EmailOctopus subscriber tracking.
+
+**Week 5** — Production hardening: exponential backoff retries, circuit breakers, human-review checkpoints, cron scheduling, Slack/email notifications, end-to-end test.
+
+### Original build phases
+
+**Phase 1 — Foundation**: pyproject.toml, config, base models, SQLAlchemy engine/ORM/facade, retry/circuit breaker, TopicReservationManager, Huey task queue.
+
+**Phase 2 — Pydantic models**: idea, research, scoring, MVP, landing page, deployment, distribution, validation models.
+
+**Phase 3 — Orchestrator + steps framework**: AbstractStep/StepContext, PipelineRunner with step registry, structlog logging, Protocol interfaces, PydanticAI LLM wrapper.
+
+**Phase 4 — Step stubs**: All 11 steps returning mock data for dry-run testing.
+
+**Phase 5 — API client stubs**: All external API clients with real interfaces and mock fallbacks.
+
+**Phase 6 — CLI + template + REST API**: Click CLI, HTML+Tailwind template, FastAPI application.
+
+**Phase 7 — Tests**: Fixtures, model tests, DB tests, orchestrator tests.
+
+### Core architecture decisions (original)
+
+- **@register_step** decorator registers steps at import time in pipeline order
+- **PipelineRunner.run_experiment()** iterates steps, checks `is_complete()` for idempotency
+- Pipeline pauses at Step 5 when `require_human_review=True`
+- **StepContext** bundles db, settings, experiment, dry_run, worker_id, correlation_id
+- **Four SQLite tables**: experiments, step_results, pipeline_log, topic_reservations
+- **Topic reservation**: `UNIQUE(topic_key, status)` + `BEGIN IMMEDIATE` for atomic claims
+- **Two-pass dedup**: keyword fingerprint (Jaccard > 0.6) → embedding similarity (cosine > 0.82) → LLM confirmation for borderline cases
+- **Worker identity**: hostname + PID for traceability across logs and reservations
+
+---
 
 ## Experiment Lifecycle
 
