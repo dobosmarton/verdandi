@@ -65,11 +65,11 @@ class StepContext:
     settings: Settings
     experiment: Experiment
     db: Database | None = None  # Deprecated: use prior_results instead
+    discovery_strategy: DiscoveryStrategy | None = None
     dry_run: bool = False
     worker_id: str = ""
     correlation_id: str = ""
     exclude_titles: tuple[str, ...] = ()
-    discovery_strategy: DiscoveryStrategy | None = None
     prior_results: PriorResults | None = None
     memory: ReadOnlyMemory | None = None
 

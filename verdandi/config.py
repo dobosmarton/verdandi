@@ -144,6 +144,9 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Discovery query variation
+    discovery_query_variation: bool = True
+
     # Redis cache
     redis_url: str = ""  # Empty = cache disabled. e.g. "redis://localhost:6379/0"
     research_cache_ttl_hours: int = 24

@@ -5,8 +5,7 @@ Phase 1 — Discovery: Collect research + generate a ProblemReport (disruption)
 Phase 2 — Synthesis: Take the discovery report and synthesize a concrete
     IdeaCandidate product idea.
 
-The strategy (disruption vs moonshot) is passed through StepContext. When no
-strategy is provided, falls back to disruption with legacy prompts.
+The strategy (disruption vs moonshot) is passed through StepContext.
 """
 
 from __future__ import annotations
@@ -29,34 +28,9 @@ from verdandi.models.idea import (
 if TYPE_CHECKING:
     from pydantic import BaseModel as BaseModelType
 
+    from verdandi.config import Settings
+
 logger = structlog.get_logger()
-
-# ---------------------------------------------------------------------------
-# Legacy defaults (used when no strategy is provided)
-# ---------------------------------------------------------------------------
-
-_LEGACY_QUERIES: list[str] = [
-    "trending micro-SaaS ideas 2025 and 2026",
-    "tools developers wish existed",
-    "underserved pain points for small businesses",
-]
-
-_LEGACY_PERPLEXITY_QUESTION = (
-    "What are the most promising underserved software product opportunities right now?"
-)
-
-_LEGACY_SYSTEM_PROMPT = (
-    "You are a product discovery agent analyzing market signals for underserved "
-    "pain points. Identify ONE specific, actionable product idea that addresses "
-    "a real pain point with evidence. Focus on micro-SaaS ideas that a solo "
-    "developer could build in 1-2 weeks.\n\n"
-    "Sector signals (derived from startup cohort analysis):\n"
-    "Prioritize: high-friction regulated industries (legal, healthcare, finance), "
-    "vertical AI applications over horizontal tools, infrastructure gaps for AI "
-    "agents (tooling, integrations, data pipelines).\n"
-    "Deprioritize: generic AI wrappers without domain moats, pure consumer social "
-    "apps (winner-take-all dynamics, extreme CAC)."
-)
 
 # ---------------------------------------------------------------------------
 # LLM output schema for Phase 2 synthesis
@@ -78,6 +52,80 @@ class _IdeaLLMOutput(BaseModel):
     differentiation: str
     source_urls: list[str] = Field(default_factory=list)
     discovery_type: DiscoveryType = Field(default=DiscoveryType.DISRUPTION)
+
+
+# ---------------------------------------------------------------------------
+# Query variation — diversify research queries across discovery batches
+# ---------------------------------------------------------------------------
+
+_VARY_QUERIES_SYSTEM = (
+    "You are a search query reformulator. Given base research queries and a "
+    "deep-research question, produce semantically equivalent but differently-worded "
+    "variants. Each variant should explore the same topic from a different angle, "
+    "using different keywords and phrasing, to surface different results from search "
+    "APIs. Keep the same intent but change specificity level, angle of approach, or "
+    "vocabulary. Return the same number of queries as the input."
+)
+
+
+class _VariedQueries(BaseModel):
+    """LLM output for reformulated search queries."""
+
+    model_config = ConfigDict(frozen=True)
+
+    queries: list[str] = Field(description="Reformulated search queries")
+    perplexity_question: str = Field(
+        description="Reformulated deep-research question",
+    )
+
+
+def _vary_queries(
+    base_queries: list[str],
+    base_perplexity_question: str,
+    settings: Settings,
+) -> _VariedQueries:
+    """Reformulate discovery queries via LLM for cache-key diversity.
+
+    Falls back to original queries on any error.
+    """
+    if not settings.discovery_query_variation:
+        return _VariedQueries(
+            queries=list(base_queries),
+            perplexity_question=base_perplexity_question,
+        )
+
+    from verdandi.llm import LLMClient
+
+    prompt = (
+        "Reformulate each of these search queries and the deep-research question. "
+        "Keep the same research intent but use different wording, angles, and keywords.\n\n"
+        "## Search queries\n"
+        + "\n".join(f"- {q}" for q in base_queries)
+        + "\n\n## Deep-research question\n"
+        + base_perplexity_question
+    )
+
+    try:
+        llm = LLMClient(settings)
+        result = llm.generate(
+            prompt,
+            _VariedQueries,
+            system=_VARY_QUERIES_SYSTEM,
+            temperature=0.9,
+            max_tokens=512,
+        )
+        logger.info(
+            "Discovery queries varied",
+            original_count=len(base_queries),
+            varied_count=len(result.queries),
+        )
+        return result
+    except Exception:
+        logger.warning("Query variation failed, using original queries", exc_info=True)
+        return _VariedQueries(
+            queries=list(base_queries),
+            perplexity_question=base_perplexity_question,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -315,45 +363,6 @@ def _build_synthesis_user_prompt(
     return prompt
 
 
-def _build_legacy_user_prompt(
-    research_text: str,
-    *,
-    has_research: bool,
-    exclude_titles: list[str] | None = None,
-) -> str:
-    """Build user prompt for legacy single-phase discovery (no strategy)."""
-    if has_research:
-        prompt = (
-            "Based on the following market research signals, identify ONE specific, "
-            "actionable micro-SaaS product idea. The idea must address a real pain "
-            "point backed by the evidence below. Include specific pain points with "
-            "severity ratings, existing solutions, and how this idea differentiates.\n\n"
-            "---\n\n"
-            f"{research_text}\n\n"
-            "---\n\n"
-            "Respond with a single structured product idea. Reference source URLs "
-            "from the research data in the source_urls field where applicable."
-        )
-    else:
-        prompt = (
-            "No external research data is available. Using your training knowledge, "
-            "identify ONE specific, actionable micro-SaaS product idea that addresses "
-            "a real, underserved pain point. Focus on problems you have strong evidence "
-            "exist based on common developer and small-business complaints. Include "
-            "specific pain points with severity ratings, existing solutions, and how "
-            "this idea differentiates. Be concrete and specific — avoid generic ideas."
-        )
-
-    if exclude_titles:
-        prompt += (
-            "\n\nIMPORTANT: Do NOT suggest any of these ideas or close variations:\n"
-            + "\n".join(f"- {t}" for t in exclude_titles)
-            + "\nPropose something in a COMPLETELY DIFFERENT domain or problem space."
-        )
-
-    return prompt
-
-
 # ---------------------------------------------------------------------------
 # Step implementation
 # ---------------------------------------------------------------------------
@@ -367,12 +376,10 @@ class IdeaDiscoveryStep(AbstractStep):
     def run(self, ctx: StepContext) -> BaseModelType:
         if ctx.dry_run:
             return self._mock_idea(ctx)
-        if ctx.discovery_strategy is not None:
-            return self._discover_idea_two_phase(ctx)
-        return self._discover_idea_legacy(ctx)
+        return self._discover_idea_two_phase(ctx)
 
     # ------------------------------------------------------------------
-    # Two-phase discovery (with strategy)
+    # Two-phase discovery
     # ------------------------------------------------------------------
 
     def _discover_idea_two_phase(self, ctx: StepContext) -> IdeaCandidate:
@@ -380,13 +387,22 @@ class IdeaDiscoveryStep(AbstractStep):
         from verdandi.llm import LLMClient
         from verdandi.research import ResearchCollector, format_research_context
 
-        assert ctx.discovery_strategy is not None
+        if ctx.discovery_strategy is None:
+            msg = "discovery_strategy is required for idea discovery"
+            raise ValueError(msg)
         strategy = ctx.discovery_strategy
 
         logger.info(
             "Starting two-phase discovery",
             strategy=strategy.name,
             discovery_type=strategy.discovery_type.value,
+        )
+
+        # --- Vary queries for cache-key diversity ---
+        varied = _vary_queries(
+            strategy.discovery_queries,
+            strategy.discovery_perplexity_question or "",
+            ctx.settings,
         )
 
         # --- Collect research signals ---
@@ -396,11 +412,11 @@ class IdeaDiscoveryStep(AbstractStep):
         try:
             collector = ResearchCollector(ctx.settings)
             raw_data = collector.collect(
-                strategy.discovery_queries,
+                varied.queries,
                 include_reddit=strategy.prioritize_reddit,
                 include_twitter=strategy.prioritize_twitter,
                 include_hn_comments=strategy.prioritize_hn,
-                perplexity_question=strategy.discovery_perplexity_question,
+                perplexity_question=varied.perplexity_question,
             )
             research_text = format_research_context(raw_data)
             has_research = True
@@ -486,84 +502,10 @@ class IdeaDiscoveryStep(AbstractStep):
         )
 
     # ------------------------------------------------------------------
-    # Legacy single-phase discovery (no strategy — backward compat)
-    # ------------------------------------------------------------------
-
-    def _discover_idea_legacy(self, ctx: StepContext) -> IdeaCandidate:
-        """Legacy single-phase discovery: research + LLM in one shot."""
-        from verdandi.llm import LLMClient
-        from verdandi.research import ResearchCollector, format_research_context
-
-        # --- Collect research signals ---
-        research_text = ""
-        has_research = False
-
-        try:
-            collector = ResearchCollector(ctx.settings)
-            raw_data = collector.collect(
-                _LEGACY_QUERIES,
-                include_reddit=True,
-                include_twitter=True,
-                include_hn_comments=True,
-                perplexity_question=_LEGACY_PERPLEXITY_QUESTION,
-            )
-            research_text = format_research_context(raw_data)
-            has_research = True
-            logger.info(
-                "Research collected for idea discovery",
-                sources=raw_data.sources_used,
-                text_length=len(research_text),
-            )
-        except RuntimeError:
-            logger.warning("All research sources failed, falling back to LLM-only discovery")
-
-        # --- Synthesize via LLM ---
-        user_prompt = _build_legacy_user_prompt(
-            research_text,
-            has_research=has_research,
-            exclude_titles=list(ctx.exclude_titles) if ctx.exclude_titles else None,
-        )
-        llm = LLMClient(ctx.settings)
-        result = llm.generate(user_prompt, _IdeaLLMOutput, system=_LEGACY_SYSTEM_PROMPT)
-
-        logger.info(
-            "Idea discovered via LLM (legacy mode)",
-            title=result.title,
-            category=result.category,
-            pain_points_count=len(result.pain_points),
-            has_research=has_research,
-        )
-
-        # Merge LLM-produced source_urls with any URLs extracted from research
-        source_urls = list(result.source_urls)
-        if has_research:
-            extracted = _extract_source_urls(research_text)
-            seen = set(source_urls)
-            for url in extracted:
-                if url not in seen:
-                    source_urls.append(url)
-                    seen.add(url)
-
-        return IdeaCandidate(
-            experiment_id=ctx.experiment.id or 0,
-            worker_id=ctx.worker_id,
-            title=result.title,
-            one_liner=result.one_liner,
-            problem_statement=result.problem_statement,
-            target_audience=result.target_audience,
-            category=result.category,
-            pain_points=result.pain_points,
-            existing_solutions=result.existing_solutions,
-            differentiation=result.differentiation,
-            source_urls=source_urls,
-        )
-
-    # ------------------------------------------------------------------
     # Mock data (dry-run mode)
     # ------------------------------------------------------------------
 
     def _mock_idea(self, ctx: StepContext) -> IdeaCandidate:
-        # Filter mocks by strategy type if available
         strategy = ctx.discovery_strategy
         if strategy is not None:
             matching = [

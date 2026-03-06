@@ -17,7 +17,7 @@ from verdandi.agents.base import StepContext
 from verdandi.config import Settings
 from verdandi.db import Database
 from verdandi.models.experiment import Experiment, ExperimentStatus
-from verdandi.models.idea import IdeaCandidate, PainPoint
+from verdandi.models.idea import DiscoveryType, IdeaCandidate, PainPoint
 from verdandi.models.landing_page import (
     FAQItem,
     FeatureItem,
@@ -34,6 +34,7 @@ from verdandi.models.research import (
     SearchResult,
 )
 from verdandi.models.scoring import Decision, PreBuildScore, ScoreComponent
+from verdandi.strategies import DiscoveryStrategy
 
 
 @pytest.fixture()
@@ -71,6 +72,18 @@ def experiment(db: Database) -> Experiment:
     return db.create_experiment(exp)
 
 
+_TEST_STRATEGY = DiscoveryStrategy(
+    discovery_type=DiscoveryType.DISRUPTION,
+    name="Test Disruption",
+    discovery_queries=["test query 1", "test query 2"],
+    discovery_perplexity_question="What are the top test problems?",
+    discovery_system_prompt="You are a test discovery agent.",
+    discovery_user_preamble="Analyze the data below.\n\n",
+    synthesis_system_prompt="Propose ONE test product idea.",
+    discovery_output_model="ProblemReport",
+)
+
+
 def _make_ctx(
     db: Database, settings: Settings, experiment: Experiment, *, dry_run: bool = False
 ) -> StepContext:
@@ -87,6 +100,7 @@ def _make_ctx(
     return StepContext(
         settings=settings,
         experiment=experiment,
+        discovery_strategy=_TEST_STRATEGY,
         db=db,
         dry_run=dry_run,
         worker_id="test-worker-1",
@@ -226,7 +240,12 @@ class TestIdeaDiscoveryStep:
         settings: Settings,
         experiment: Experiment,
     ) -> None:
-        from verdandi.agents.discovery import IdeaDiscoveryStep, _IdeaLLMOutput
+        from verdandi.agents.discovery import (
+            IdeaDiscoveryStep,
+            _IdeaLLMOutput,
+            _VariedQueries,
+        )
+        from verdandi.models.idea import ProblemReport
         from verdandi.research import RawResearchData
 
         # Build mock research data
@@ -243,6 +262,22 @@ class TestIdeaDiscoveryStep:
             sources_used=["tavily"],
         )
 
+        # Mock LLM outputs for the three generate() calls:
+        # 1. Query variation
+        varied_queries = _VariedQueries(
+            queries=["varied query 1", "varied query 2"],
+            perplexity_question="Varied perplexity question?",
+        )
+        # 2. Phase 1: ProblemReport
+        problem_report = ProblemReport(
+            problem_area="Widget creation pain",
+            user_group="Widget makers",
+            workflow_description="Manual widget creation process",
+            pain_severity=7,
+            pain_frequency="daily",
+            complaint_count=15,
+        )
+        # 3. Phase 2: IdeaLLMOutput
         llm_output = _IdeaLLMOutput(
             title="TestProduct — AI Widget",
             one_liner="AI-powered widget maker",
@@ -274,7 +309,7 @@ class TestIdeaDiscoveryStep:
             ),
             patch(
                 "verdandi.llm.LLMClient.generate",
-                return_value=llm_output,
+                side_effect=[varied_queries, problem_report, llm_output],
             ),
         ):
             step = IdeaDiscoveryStep()
